@@ -65,7 +65,7 @@ from typing import Any
 
 import httpx
 
-from common.i18n import N_, tr
+from common.i18n import N_, decimal, tr
 from common.picture_sizes import (
     CPU_PIXELS,
     FPS,
@@ -278,6 +278,7 @@ async def trial(base_url: str, model_id: str, *, size: int = TRIAL_SIZE,
 # --- the pictures people ask for (29.4) ---
 
 STEP_S = 0.5  # how often the progress is asked while a picture is drawn
+VOICE_SLACK_S = 0.1  # (57) a voice's file this much longer or shorter than the video - nothing said of it
 WATCH_END_S = 15.0  # a progress watch told to stop ends within its request's timeout
 PICTURE_TIMEOUT_S = 1800.0  # half an hour at most: the processor and a big model (29.1)
 LIVE = ("queued", "running")
@@ -830,12 +831,25 @@ class Visual:
         try:
             select = enhance.subject(spec.get("select"))  # (56) «Только предмет»: where it was clicked
             draw = enhance.drawing(spec.get("draw"))  # (58) «Заменить предмет», «Заменить фон», «Формат»
+            lips = enhance.lips_of(spec.get("lips"))  # (57) «Губы под голос»: the video's own sound, or a file
         except enhance.EnhanceError as exc:
             raise VisualError(str(exc), exc.status) from None
-        if size is None and motion is None and select is None and draw is None:
+        if size is None and motion is None and select is None and draw is None and lips is None:
             raise VisualError(tr("выберите, что улучшить"), 422)
         if select is not None and draw is not None:
             raise VisualError(tr("нет такого улучшения"), 422)
+        if lips is not None and (select is not None or draw is not None):
+            raise VisualError(tr("«Губы под голос» — отдельно от «Предмета»: сделайте одно, потом улучшите готовый "
+                                 "ролик"), 422)  # fmt: skip
+        if lips is not None and motion in ("slow2", "slow4"):
+            raise VisualError(tr("замедленный ролик — без звука: губы под голос с ним не делаются"), 422)
+        if lips is not None and lips["voice"] == "file":
+            voice = Path(lips["path"])
+            if voice.suffix.lower() not in enhance.VOICE_FILES or not await asyncio.to_thread(voice.is_file):
+                raise VisualError(tr("файл голоса не найден или это не звук: {formats}",
+                                     formats=", ".join(f[1:] for f in enhance.VOICE_FILES)), 422)  # fmt: skip
+            if (await asyncio.to_thread(voice.stat)).st_size > enhance.VOICE_BYTES:
+                raise VisualError(tr("файл голоса больше {mb} МБ", mb=enhance.VOICE_BYTES >> 20), 413)
         film_id = None
         if spec.get("film"):
             film_id = str(spec["film"])
@@ -864,7 +878,9 @@ class Visual:
             source = (await self.mp4(found)).relative_to(self.media).as_posix()
             prompt, fps, width, height = found["prompt"], int(found.get("fps") or FPS), found["width"], found["height"]
             sound = bool(found.get("sound")) or bool(found.get("enhance") and found["enhance"].get("sound"))
-        parts = ["select" if select else None, size, "smooth" if motion else None]
+        if lips is not None and lips["voice"] == "clip" and not sound:
+            raise VisualError(tr("в ролике нет звука — выберите файл с голосом"), 422)
+        parts = ["select" if select else None, "lips" if lips else None, size, "smooth" if motion else None]
         if draw is not None:  # (58) VACE; SAM for the object; RIFE when «Быстрее» draws fewer frames
             parts += ["replace", "select" if draw["kind"] != "edges" else None,
                       "smooth" if enhance.stride(fps, draw["fast"]) != 1 else None]  # fmt: skip
@@ -890,7 +906,13 @@ class Visual:
             how["select"] = select
         if draw is not None:
             how["draw"] = draw
-        job_id = uuid.uuid4().hex[:12]
+        job_id, note = uuid.uuid4().hex[:12], ""
+        if lips is not None:  # (57) a file's voice: copied beside, gone with the job's end; the video has sound now
+            how["lips"], how["sound"] = {"voice": lips["voice"]}, True
+            sound = True
+            if lips["voice"] == "file":
+                how["lips"]["file"] = await self._keep_voice(Path(lips["path"]), job_id)
+                note = await self._voice_note(self.media / source, self.media / how["lips"]["file"])
 
         def add(conn) -> None:
             conn.execute(
@@ -906,7 +928,27 @@ class Visual:
         await self._publish(job_id)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
-        return await self._db.acall(lambda conn: job(conn, job_id))
+        made = await self._db.acall(lambda conn: job(conn, job_id))
+        return made | {"note": note} if note else made
+
+    async def _keep_voice(self, source: Path, job_id: str) -> str:
+        """(57) The person's voice file, copied beside the job for its run: <month>/voice-<job>.<ext>."""
+        name = f"{datetime.now(UTC):%Y-%m}/voice-{job_id}{source.suffix.lower()}"
+        await asyncio.to_thread((self.media / name).parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copyfile, source, self.media / name)
+        return name
+
+    async def _voice_note(self, clip: Path, voice: Path) -> str:
+        """(57) What the window says of a voice longer or shorter than the video - it is cut, or the video goes on
+        without it; '' - as long, or not told."""
+        clip_s = await self.ffmpeg_asks(lambda program: ffmpeg.seconds_long(program, clip))
+        voice_s = await self.ffmpeg_asks(lambda program: ffmpeg.seconds_long(program, voice))
+        if clip_s is None or voice_s is None or abs(voice_s - clip_s) < VOICE_SLACK_S:
+            return ""
+        if voice_s > clip_s:
+            return tr("голос длиннее ролика на {over} с — его конец не войдёт", over=decimal(f"{voice_s - clip_s:.1f}"))
+        return tr("голос короче ролика на {under} с — дальше ролик без звука, губы как были",
+                  under=decimal(f"{clip_s - voice_s:.1f}"))  # fmt: skip
 
     async def frame(self, spec: dict[str, Any], share: float) -> bytes:
         """(56) «Только предмет»: a frame of the video to be improved - a Studio's (`from_job`) or a film's (`film`)
@@ -1590,7 +1632,15 @@ class Visual:
         """A video improved (54.5): the models llama-swap holds leave the card first - the programs run past it, and
         RelayVSR takes 14.5 GB of it; ffmpeg fetched the first time; the parts' programs (hub/enhance.py) piece by
         piece, how far told to the window as a video's steps are; a poster beside the new MP4 for the lists. ✕,
-        «Выгрузить» - its program is killed, nothing is left."""
+        «Выгрузить» - its program is killed, nothing is left: (57) nor the voice's file copied for it."""
+        try:
+            await self._enhance_job(found)
+        finally:
+            voice = ((found.get("enhance") or {}).get("lips") or {}).get("file")
+            if voice:
+                await asyncio.to_thread((self.media / voice).unlink, missing_ok=True)
+
+    async def _enhance_job(self, found: dict[str, Any]) -> None:
         job_id, how = found["id"], found["enhance"]
         if job_id in self._stopping:
             await self._set(job_id, status="cancelled", error="")
@@ -1619,9 +1669,12 @@ class Visual:
                 program = await self._ffmpeg_does(lambda program: program)
             if self.enhance is None:
                 raise VisualError(tr("«Улучшить ролик» не готово"), 503)
+            lips = how.get("lips")  # (57) a file's voice - where it was copied
+            if lips is not None and lips.get("file"):
+                lips = {"voice": "file", "path": str(self.media / lips["file"])}
             frames = await self.enhance.make(source, target, cancel, ffmpeg=program, fps=int(how["fps"]),
                                              size=how["size"], motion=how["motion"], select=how.get("select"),
-                                             draw=how.get("draw"), told=told)  # fmt: skip
+                                             draw=how.get("draw"), lips=lips, told=told)  # fmt: skip
         except (enhance.EnhanceError, VisualError) as exc:
             stopped = job_id in self._stopping or cancel.is_set()
             await self._set(job_id, status="cancelled" if stopped else "failed", error="" if stopped else str(exc),

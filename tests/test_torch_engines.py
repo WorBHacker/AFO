@@ -341,6 +341,102 @@ def value(args, flag):
     return args[args.index(flag) + 1]
 
 
+def voice_file(path, seconds):
+    """A voice's file the person would choose: a tone of `seconds`, 44.1 kHz."""
+    import subprocess
+
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency=330:duration={seconds}", "-ar", "44100", str(path)], check=True,
+                   timeout=60)  # fmt: skip
+    return path
+
+
+def heard_wav(path):
+    import wave
+
+    with wave.open(str(path), "rb") as w:
+        return {"rate": w.getframerate(), "channels": w.getnchannels(), "seconds": w.getnframes() / w.getframerate()}
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_and_the_engine_hears_it_as_long_as_the_video(
+        stand, tmp_path, monkeypatch):  # fmt: skip
+    """57.2: «Губы под голос» - a job of the Studio's queue: the engine gets the video's frames, MuseTalk's code and
+    weights' folders, the frames a second, and the voice - the video's own sound or the person's file - at 16 kHz,
+    one channel, exactly as long as the video. The frames it gives back become the new video: with the video's own
+    sound, or the file's - padded with silence or cut to the video's length; a file longer or shorter is said; the
+    file copied for the job is gone after it. No face in the video - said so. Not with «Предмет», nor slowed; a video
+    without sound, a file that is not a sound - refused at once."""
+    hub = stand  # noqa: F811
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
+    media, base = hub.app.state.visual.media, torch_engines.home()
+    source_id = a_video_job(hub)  # 72 frames, 24 a second, 3 s, with sound
+    refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "clip"}})
+    assert refused.status_code == 422 and "«Губы под голос» не установлено" in refused.json()["detail"]
+    hub.post("/v1/enhance/parts/lips", json={"licence_ok": True})
+    deadline = time.monotonic() + 60
+    while next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "lips")["state"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    log = Path(tmp_path / "engine.jsonl")
+
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "clip"}})
+    assert asked.status_code == 200, asked.text
+    job = asked.json()["job"]
+    assert job["enhance"]["lips"] == {"voice": "clip"} and "note" not in job
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled")
+    assert done["status"] == "done", done
+    run = hub.engine()[-1]
+    assert value(run["args"], "--code") == str(torch_engines.code_dir(base, "lips"))
+    assert value(run["args"], "--models") == str(models_home() / "lips") and value(run["args"], "--fps") == "24"
+    assert Path(run["cwd"]) == base / "lips" / "home" and run["isolated"]
+    heard = heard_wav(log.with_name("voice-0.wav"))
+    assert heard["rate"] == 16000 and heard["channels"] == 1 and abs(heard["seconds"] - 3.0) < 0.01
+    shown = described(media / done["file"])
+    assert shown["size"] == (64, 64) and shown["sound"] and abs(shown["seconds"] - 3) < 0.1 and done["frames"] == 72
+
+    short = voice_file(tmp_path / "Голос.wav", 1)
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "file", "path": str(short)}})
+    assert asked.status_code == 200, asked.text
+    job = asked.json()["job"]
+    assert "короче ролика на 2" in job["note"] and job["enhance"]["lips"]["voice"] == "file"
+    kept = media / job["enhance"]["lips"]["file"]
+    assert kept.name == f"voice-{job['id']}.wav" and kept.read_bytes() == short.read_bytes()
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled")
+    assert done["status"] == "done", done
+    heard = heard_wav(log.with_name("voice-1.wav"))
+    assert heard["rate"] == 16000 and abs(heard["seconds"] - 3.0) < 0.01  # padded with silence
+    shown = described(media / done["file"])
+    assert shown["sound"] and abs(shown["seconds"] - 3) < 0.1  # the voice's sound, as long as the video
+    assert not kept.exists() and not list(media.rglob("voice-*"))
+
+    long = voice_file(tmp_path / "long.wav", 5)
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "file", "path": str(long)}})
+    assert "длиннее ролика на 2" in asked.json()["job"]["note"]
+    done = wait_job(hub, asked.json()["job"]["id"], "done", "failed", "cancelled")
+    assert done["status"] == "done" and abs(described(media / done["file"])["seconds"] - 3) < 0.1  # cut
+
+    monkeypatch.setenv("FAKE_ENGINE_NO_FACE", "1")
+    faceless = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "clip"}}).json()["job"]
+    failed = wait_job(hub, faceless["id"], "failed", "done", "cancelled")
+    assert failed["status"] == "failed" and "не найдено лицо" in failed["error"]
+    monkeypatch.delenv("FAKE_ENGINE_NO_FACE")
+
+    clicked = {"share": 0.5, "x": 0.5, "y": 0.5}
+    for body, words in (({"select": clicked}, "отдельно от «Предмета»"), ({"motion": "slow2"}, "замедленный")):
+        refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "clip"}, **body})
+        assert refused.status_code == 422 and words in refused.json()["detail"]
+    text = tmp_path / "voice.txt"
+    text.write_text("not a sound", encoding="utf-8")
+    for path in (str(text), str(tmp_path / "nowhere.wav"), ""):
+        refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "lips": {"voice": "file", "path": path}})
+        assert refused.status_code == 422, path
+    silent = a_video_job(hub)
+    hub.app.state.db.call(lambda conn: conn.execute("UPDATE visual_jobs SET sound = 0 WHERE id = ?", (silent,)))
+    refused = hub.post("/v1/visual/improve", json={"from_job": silent, "lips": {"voice": "clip"}})
+    assert refused.status_code == 422 and "нет звука" in refused.json()["detail"]
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
 def test_a_video_keeps_only_the_object_clicked_and_the_engine_runs_in_its_folder_in_a_job(stand, tmp_path,
                                                                                           monkeypatch):  # fmt: skip

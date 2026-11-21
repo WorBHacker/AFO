@@ -266,6 +266,27 @@ def from_frames(program: Path, folder: Path, target: Path, *, fps: int, sound: P
              timeout=JOIN_TIMEOUT_S)  # fmt: skip
 
 
+def voice_track(program: Path, source: Path, target: Path, *, seconds: float, rate: int, channels: int) -> None:
+    """(57, blocking) The sound of `source` - a video's or a sound file's - as a WAV of `rate` Hz and `channels`,
+    exactly `seconds` long: padded with silence, or cut. «Губы под голос» hears the voice at 16 kHz, one channel; a
+    person's file becomes the new video's sound at 48 kHz, two."""
+    _written(program, ["-i", str(source), "-vn", "-af", f"apad,atrim=duration={seconds:.4f}", "-ac", str(channels),
+                       "-ar", str(rate), "-c:a", "pcm_s16le", "-f", "wav"], target,
+             N_("ffmpeg не взял голос: {said}"))  # fmt: skip
+
+
+def seconds_long(program: Path, source: Path) -> float | None:
+    """(57, blocking) How long a video or a sound is, in seconds, as ffmpeg says it; None - it cannot tell."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        done = subprocess.run([str(program), "-hide_banner", "-i", str(source)], capture_output=True,
+                              timeout=CONVERT_TIMEOUT_S, creationflags=flags, check=False)  # fmt: skip
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    found = re.search(r"Duration: (\d+):(\d\d):(\d\d(?:\.\d+)?)", (done.stderr or b"").decode("utf-8", "replace"))
+    return int(found[1]) * 3600 + int(found[2]) * 60 + float(found[3]) if found else None
+
+
 def join(program: Path, clips: list[tuple[Path, float]], target: Path, *, fps: int, fade_s: float = 0.0) -> None:
     """Scenes into one MP4 (50.3, blocking): `clips` - each with its length in seconds (frames / fps: the engine's
     WebP does not say it). Cut to cut - every frame of each, once; with `fade_s` - a cross-fade of that length at

@@ -8,6 +8,9 @@ the hub with the engine's own Python (`python -I fake_torch_engine.py <arguments
   moment's picture copied into the plan's `out` as the moment drawn, its steps written into `progress` as it goes
   ($FAKE_ENGINE_STEP_S a step); the plan copied beside $FAKE_ENGINE_LOG as plan-<n>.json. --compose <plan.json>:
   each frame's `drawn` copied - edges: scaled to the canvas - numbered from 1.
+- (57, hub/torch_scripts/lips.py) --frames <dir> --voice <wav> --out <dir> --fps <n>: each frame copied, as MuseTalk
+  gives back a frame without a face; the voice copied beside $FAKE_ENGINE_LOG as voice-<n>.wav; the last line - JSON
+  {"frames", "faces", "made"} ($FAKE_ENGINE_NO_FACE - no face found).
 
 $FAKE_ENGINE_LOG - each run a JSON line: its arguments, folder, its Python, whether it runs isolated (-I), and the
 environment it was given for its caches and temporary files. A run at frames leaves a file in a temporary folder of
@@ -112,6 +115,12 @@ def main():
     for frame in sorted(frames.glob("*.png")):
         shutil.copyfile(frame, out / frame.name)
         count += 1
+    if voice := value(args, "--voice"):  # (57) the lips
+        if log := os.environ.get("FAKE_ENGINE_LOG"):
+            shutil.copyfile(voice, Path(log).with_name(f"voice-{len(list(Path(log).parent.glob('voice-*.wav')))}.wav"))
+        faces = 0 if os.environ.get("FAKE_ENGINE_NO_FACE") else count
+        print(json.dumps({"frames": count, "faces": faces, "made": faces}))
+        return
     print(json.dumps({"frames": count, "shown": count}))
 
 

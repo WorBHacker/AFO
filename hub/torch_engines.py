@@ -715,6 +715,13 @@ def run(engine: str, args: list[str], cancel: threading.Event, *, timeout: float
                     short=OUT_OF_CARD, scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
 
 
+def lips_args(models: Path, frames: Path, voice: Path, out: Path, *, fps: int) -> list[str]:
+    """(57) MuseTalk: the mouth of the face in the frames of `frames` (FRAME_NAME) made to say `voice` (a WAV of 16
+    kHz) into `out` by the same names - where no face is found, or the voice has ended, as they were."""
+    return ["--code", str(code_dir(home(), "lips")), "--models", str(models / "lips"), "--frames", str(frames),
+            "--voice", str(voice), "--out", str(out), "--fps", str(fps)]  # fmt: skip
+
+
 def select_args(models: Path, frames: Path, out: Path, *, at: int, x: float, y: float,
                 masks: bool = False) -> list[str]:  # fmt: skip
     """SAM 2.1: the object at (x, y) - shares of the frame's width and height - of frame `at` (from 0) followed

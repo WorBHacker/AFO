@@ -125,6 +125,8 @@ NEGATIVE = ("Bright tones, overexposed, static, blurred details, subtitles, styl
             "poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still "
             "picture, messy background, three legs, many people in the background, walking backwards")  # fmt: skip
 WORDS_MAX = 500
+VOICE_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")  # (57) a voice's file, as a film's music
+VOICE_BYTES = 200 << 20
 STEP_S = 40.0  # a step at most, for the time out (58.1: 17.8-19.3 s, the VAE besides)
 LOAD_S = 1200.0  # the model and umT5 loaded, the text encoded
 DETAIL_GIB = 15.5  # a card of 16 GB says 15.9: RelayVSR took 14.0-14.5 of it (54.1)
@@ -422,6 +424,34 @@ def drawing(raw: Any) -> dict[str, Any] | None:
     return found | subject({k: raw.get(k) for k in ("share", "x", "y")})  # type: ignore[operator]
 
 
+def lips_of(raw: Any) -> dict[str, str] | None:
+    """(57) «Губы под голос»: {voice: clip - the video's own sound | file, path: the voice's file}; None - not asked.
+    Anything else - refused."""
+    if raw is None:
+        return None
+    try:
+        voice, path = str(raw["voice"]), str(raw.get("path") or "").strip()
+    except TypeError, KeyError, AttributeError:
+        raise EnhanceError(tr("нет такого улучшения"), 422) from None
+    if voice == "clip":
+        return {"voice": "clip"}
+    if voice != "file":
+        raise EnhanceError(tr("нет такого улучшения"), 422)
+    if not path:
+        raise EnhanceError(tr("выберите файл с голосом"), 422)
+    return {"voice": "file", "path": path}
+
+
+def last_said(text: str) -> dict[str, Any]:
+    """The last line of JSON a program said; {} - none."""
+    for line in reversed(text.splitlines()):
+        if line.strip().startswith("{"):
+            with contextlib.suppress(ValueError):
+                found = json.loads(line)
+                return found if isinstance(found, dict) else {}
+    return {}
+
+
 def vace_size(width: int, height: int) -> tuple[int, int]:
     """The size VACE draws a video of this size at: its own when 480p or less with sides of 16 (LTX's 768 × 512, a
     film's 832 × 480), else of VACE_PIXELS, the same proportions, sides of 16."""
@@ -697,7 +727,7 @@ class Enhance:
 
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
                    size: str | None = None, motion: str | None = None, select: dict[str, Any] | None = None,
-                   draw: dict[str, Any] | None = None,
+                   draw: dict[str, Any] | None = None, lips: dict[str, Any] | None = None,
                    told: Callable[[float], Awaitable[None]] | None = None) -> int:  # fmt: skip
         """A video improved into `target` (MP4); how many frames it has. Its frames taken out by ffmpeg, made by the
         parts' programs, put back together, its sound with them. `size` (54.4): «sharp» - twice as large by
@@ -707,20 +737,25 @@ class Enhance:
         (a sound stretched so is not the sound). `select` (56, `subject`): the object clicked kept, the rest
         darkened - first, at the video's own size. Then larger, then the motion: fewer frames are enlarged. Both go
         shot by shot: nothing is made across a cut. `draw` (58, `drawing`): an object, the background or the
-        edges drawn anew by VACE - first, at the video's own size; not with `select`. `told(share)` - how far, after
-        each piece. The frames lie beside `target` meanwhile and are gone after, whatever happened."""
+        edges drawn anew by VACE - first, at the video's own size; not with `select`. `lips` (57, `lips_of`): the
+        face's mouth made to say the video's own sound or a voice's file by MuseTalk - first, at the video's own
+        size; not with `select` or `draw`, nor slowed (a slowed video has no sound); with a file - its voice is the new
+        video's sound. `told(share)` - how far, after each piece. The frames lie beside `target` meanwhile and are
+        gone after, whatever happened."""
         if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
-        select, draw = subject(select), drawing(draw)
-        if motion is None and size is None and select is None and draw is None:
+        select, draw, lips = subject(select), drawing(draw), lips_of(lips)
+        if motion is None and size is None and select is None and draw is None and lips is None:
             raise EnhanceError(tr("выберите, что улучшить"), 422)
-        if select is not None and draw is not None:
+        if (select is not None and draw is not None) or (lips is not None and (
+                select is not None or draw is not None or motion in ("slow2", "slow4"))):  # fmt: skip
             raise EnhanceError(tr("нет такого улучшения"), 422)
         if motion == "fps60" and fps >= SMOOTH_FPS:
             raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
         work = target.with_name(f".{target.stem}.work")
         await asyncio.to_thread(engines.remove_tree, work)
-        stages = [s for s in ("draw" if draw else None, "select" if select else None, size, motion) if s is not None]
+        stages = [s for s in ("draw" if draw else None, "select" if select else None, "lips" if lips else None, size,
+                              motion) if s is not None]  # fmt: skip
 
         async def stage(n: int) -> Callable[[float], Awaitable[None]] | None:
             if told is None:
@@ -745,13 +780,17 @@ class Enhance:
                 frames = await self._draw(frames, work, count, fps, cut, draw, cancel, await stage(0))
             if select is not None:
                 frames = await self._select(frames, work, count, select, cancel, await stage(0))
+            sound: Path | None = source
+            if lips is not None:
+                frames, sound = await self._lips(frames, work, count, fps, lips, source, ffmpeg, cancel,
+                                                 await stage(0))  # fmt: skip
             if size is not None:
                 frames = await self._enlarge(frames, work, pieces(count, cut), size, (width, height), fps, ffmpeg,
                                              cancel, await stage(stages.index(size)))  # fmt: skip
             if motion is not None:
                 frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel,
                                             await stage(len(stages) - 1))  # fmt: skip
-            sound = None if motion in ("slow2", "slow4") else source
+            sound = None if motion in ("slow2", "slow4") else sound
             made = len(await asyncio.to_thread(os.listdir, frames))
             await asyncio.to_thread(video.from_frames, ffmpeg, frames, target,
                                     fps=SMOOTH_FPS if motion == "fps60" else fps, sound=sound)  # fmt: skip
@@ -882,6 +921,33 @@ class Enhance:
         if told is not None:
             await told(1.0)
         return out
+
+    async def _lips(self, frames: Path, work: Path, count: int, fps: int, lips: dict[str, str], source: Path,
+                    ffmpeg: Path, cancel: asyncio.Event,
+                    told: Callable[[float], Awaitable[None]] | None) -> tuple[Path, Path]:  # fmt: skip
+        """(57) The face's mouth made to say the voice - the video's own sound or the person's file - by MuseTalk
+        (hub/torch_scripts/lips.py): it hears the voice at 16 kHz, as long as the video. The frames come back by their
+        names - where a face is and the voice goes on, its mouth drawn anew; the rest as they were. With the new
+        frames - the new video's sound: the video's own, or the file's, padded with silence or cut to the video's
+        length. No face anywhere - said so."""
+        seconds, heard = count / fps, Path(lips["path"]) if lips["voice"] == "file" else source
+        voice, sound = work / "voice16.wav", source
+        await asyncio.to_thread(video.voice_track, ffmpeg, heard, voice, seconds=seconds, rate=16000, channels=1)
+        if lips["voice"] == "file":
+            sound = work / "voice.wav"
+            await asyncio.to_thread(video.voice_track, ffmpeg, heard, sound, seconds=seconds, rate=48000, channels=2)
+        out = work / "lips"
+        said = await self.run("lips", torch_engines.lips_args(self.models, frames, voice, out, fps=fps), cancel)
+        came = len(await asyncio.to_thread(os.listdir, out)) if await asyncio.to_thread(out.is_dir) else 0
+        if came != count:
+            raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                 wanted=count))  # fmt: skip
+        if not last_said(said).get("faces"):
+            raise EnhanceError(tr("на кадрах ролика не найдено лицо — губы подставить некуда"), 422)
+        await asyncio.to_thread(engines.remove_tree, frames)
+        if told is not None:
+            await told(1.0)
+        return out, sound
 
     async def _enlarge(self, frames: Path, work: Path, spans: list[tuple[int, int]], size: str,
                        side: tuple[int, int], fps: int, ffmpeg: Path, cancel: asyncio.Event,

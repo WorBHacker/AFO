@@ -125,10 +125,18 @@ class Draw(BaseModel):
     canvas: Literal["9:16", "1:1", "16:9"] | None = None
 
 
+class Lips(BaseModel):
+    """(57) «Губы под голос»: the video's own sound (`clip`), or a voice's file on this computer (`file`, its path -
+    the hub copies it for the job)."""
+
+    voice: Literal["clip", "file"]
+    path: str = Field(default="", max_length=1000)
+
+
 class Improve(BaseModel):
     """«Улучшить ролик» (54.5): a video of the Studio's or a film's joined one; twice as large (fast or with
     details), 60 frames a second or slowed, only the object clicked (56), an object, the background or the edges
-    drawn anew (58) - any of them, or several (`select` and `draw` - not together)."""
+    drawn anew (58), the mouth to a voice (57) - any of them, or several (`select`, `draw`, `lips` - one of them)."""
 
     from_job: str = Field(default="", max_length=64)
     film: str = Field(default="", max_length=64)
@@ -136,6 +144,7 @@ class Improve(BaseModel):
     motion: Literal["fps60", "slow2", "slow4"] | None = None
     select: Subject | None = None
     draw: Draw | None = None
+    lips: Lips | None = None
 
 
 @router.post("/improve")
