@@ -15,7 +15,7 @@ from hub import changes, projects
 from hub import chat as chat_module
 from hub.chat import CHAT_TOOLS, NOT_RUN, _to_prompt
 from hub.gateway.anthropic_provider import replay_blocks, to_wire
-from hub.gateway.base import Model, StreamEvent
+from hub.gateway.base import INVALID_JSON, Model, StreamEvent
 from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.gateway.openai_compat import to_wire as openai_wire
 from hub.gateway.openai_responses import cache_key
@@ -572,6 +572,25 @@ def test_with_no_projects_at_all_nobody_is_asked(hub):
     assert not [e for e in events if e["type"] == "run.question"]
     said = next(m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool")
     assert "no projects in AFO yet" in said["content"][0]["output"]
+
+
+def test_a_call_whose_arguments_are_not_json_is_told_so(hub, repo):
+    """«Стабилизация» (61.9, live): a call whose arguments did not parse ({INVALID_JSON: the text}) is not run on a
+    guess - delegate_tasks answered «`tasks`: a list of 1 to 8 tasks», list_files ran with none of them - but told
+    that they are not JSON: the parser's word and the text as sent."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    cut = '{"tasks": [{"task_id": "a", "agent_profile": "Верстальщик", "prompt": "Сделай'
+    provider = ToolProvider([[{"id": "c1", "name": "delegate_tasks", "input": {INVALID_JSON: cut}},
+                              {"id": "c2", "name": "list_files", "input": {INVALID_JSON: '{"project": "proj",}'}}]
+                             ])  # fmt: skip
+    conv, events = run_chat(hub, provider, attach=[pid])
+    assert events[-1]["type"] == "chat.done"
+    told = next(m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool")["content"]
+    assert [b["error"] for b in told] == [True, True]
+    assert all(b["output"].startswith("not done: this call's arguments are not valid JSON (") for b in told), told
+    assert "Unterminated string" in told[0]["output"] and repr(cut) in told[0]["output"]
+    assert "trailing comma" in told[1]["output"]
+    assert not [e for e in events if e["type"] == "chat.tool"]  # neither ran
 
 
 def test_a_cloud_model_may_not_take_over_a_chat_with_local_only_data(hub, repo):

@@ -2238,6 +2238,14 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   - найдено при 61.9 (вживую): вызов, чьи аргументы — сломанный JSON (`{"__invalid_json__": …}`,
     `hub/gateway/openai_compat.py` 450), `delegate_tasks` отвечает «`tasks`: a list of 1 to 8 tasks» — модель не
     узнаёт, что дело в JSON. Ответ должен называть причину: аргументы вызова — не JSON.
+    ✓ Порция 1, шаг 5 (2026-11-21). Беда была шире `delegate_tasks`: любой инструмент запускался со сломанными
+    аргументами наугад (`list_files` — вовсе без них). Теперь `_answer_tools` такой вызов не запускает, а отвечает
+    `NOT_JSON`: «not done: this call's arguments are not valid JSON (слово разборщика: где и что): начало текста, как
+    прислан - call it again with one JSON object» (`_not_json`). Метка сломанного вызова — одна на хаб,
+    `INVALID_JSON` в `hub/gateway/base.py`; её ставят `openai_compat` и `openai_responses`. Файлы — `hub/chat.py`,
+    `hub/gateway/base.py`, `openai_compat.py`, `openai_responses.py`. Тест —
+    `tests/test_tools.py::test_a_call_whose_arguments_are_not_json_is_told_so` (`delegate_tasks` с оборванным JSON и
+    `list_files` с лишней запятой); на прежнем коде `list_files` выполняется.
   - найдено при 61.9 (вживую): «Проверить» у ключа OpenRouter говорит «ключ работает», когда ключ просрочен —
     проверка лишь читает список моделей (`_try` → `list_models`), а он у OpenRouter открыт и без ключа; первый же
     запрос модели получает 401 («API key expired»). Проверять надо запросом, которому нужен ключ (`/api/v1/key`).

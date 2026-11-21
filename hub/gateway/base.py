@@ -111,6 +111,10 @@ def tool_call_block(call_id: str, name: str, args: Any) -> dict[str, Any]:
     return {"type": "tool_call", "id": call_id, "name": name, "input": args}
 
 
+# a call whose arguments did not parse as JSON: {INVALID_JSON: the text as sent} - the chat answers the model why
+INVALID_JSON = "__invalid_json__"
+
+
 def tool_result_block(call_id: str, name: str, output: str, error: bool = False) -> dict[str, Any]:
     return {"type": "tool_result", "id": call_id, "name": name, "output": output, "error": error}
 

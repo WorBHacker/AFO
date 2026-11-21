@@ -31,7 +31,7 @@ from common.i18n import tr
 
 from .. import llama_config
 from . import text_calls
-from .base import Model, ProviderError, StreamEvent
+from .base import INVALID_JSON, Model, ProviderError, StreamEvent
 
 log = logging.getLogger("hub.gateway.openai")
 
@@ -447,7 +447,7 @@ def _call(index: int, call: dict[str, str]) -> dict[str, Any]:
     try:
         args = json.loads(call["args"] or "{}")
     except ValueError:
-        args = {"__invalid_json__": call["args"]}
+        args = {INVALID_JSON: call["args"]}
     return {"id": call["id"] or f"call_{index}", "name": call["name"], "input": args}
 
 

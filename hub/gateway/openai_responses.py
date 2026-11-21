@@ -35,7 +35,7 @@ import httpx
 
 from common.efforts import own_efforts
 
-from .base import Model, ProviderError, StreamEvent, long_tier, scheduled
+from .base import INVALID_JSON, Model, ProviderError, StreamEvent, long_tier, scheduled
 
 log = logging.getLogger("hub.gateway.openai")
 
@@ -219,7 +219,7 @@ class OpenAIProvider:
                 try:
                     args = json.loads(item.get("arguments") or "{}")
                 except ValueError:
-                    args = {"__invalid_json__": item.get("arguments", "")}
+                    args = {INVALID_JSON: item.get("arguments", "")}
                 calls.append({"id": item.get("call_id") or item.get("id", ""), "name": item.get("name", ""),
                               "input": args})  # fmt: skip
         said_no = "".join(refusal).strip()

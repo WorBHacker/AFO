@@ -102,7 +102,7 @@ from .db import Database
 from .delegate import TASK_DIFF, models_text, task_models
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
-from .gateway.base import cost_usd, tool_result_block, until_cancelled
+from .gateway.base import INVALID_JSON, cost_usd, tool_result_block, until_cancelled
 from .gpu_card import AGENT, CHAT, GpuCard, named
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
@@ -115,6 +115,7 @@ DEFAULT_EFFORT = "medium"
 TITLE_LENGTH = 60
 MAX_TOOL_STEPS = 30  # 31.3: coder makes one call a step - 12 did not hold an app of a few files with its tests
 NOT_RUN = "not run: the run stopped before this call"
+NOT_JSON = "not done: this call's arguments are not valid JSON ({why}): {sent} - call it again with one JSON object"
 READ_ONLY = "not done: this chat is read-only - the user did not allow changes. Say what you would change instead."
 CHAT_TOOLS = [
     *TOOLS,
@@ -958,6 +959,10 @@ class ChatService:
             picture: dict[str, Any] = {}  # a picture the call drew (29.6): kept with the chat, shown under the call
             if (refuse and call["name"] not in let) or cancel.is_set():
                 results.append(tool_result_block(call["id"], call["name"], refuse or NOT_RUN, True))
+                continue
+            if isinstance(call["input"], dict) and INVALID_JSON in call["input"]:  # not run on a guess (61.9)
+                said = _not_json(call["input"][INVALID_JSON])
+                results.append(tool_result_block(call["id"], call["name"], said, True))
                 continue
             if call["name"] in PROJECT_TOOLS and not ctx.projects:  # a chat with no project: which one (31.2)
                 said = await self._pick_project(conversation_id, call, ctx, cloud, cancel)
@@ -1933,6 +1938,18 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: P
             entry["provider_raw"] = message.provider_raw
         prompt.append(entry)
     return _answer_open_calls(prompt)
+
+
+def _not_json(sent: Any) -> str:
+    """What a call whose arguments did not parse is answered («Стабилизация», 61.9): the parser's word and the text
+    as sent (its start) - not a tool's complaint about a missing field, which leaves the model guessing why."""
+    text = sent if isinstance(sent, str) else str(sent)
+    try:
+        json.loads(text)
+        why = "not one object"
+    except ValueError as exc:
+        why = str(exc)
+    return NOT_JSON.format(why=why, sent=repr(text if len(text) <= 300 else f"{text[:300]}…"))
 
 
 def _pictures_for(model: dict, prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
