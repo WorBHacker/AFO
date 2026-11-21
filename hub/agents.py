@@ -620,9 +620,9 @@ def _judge_ready(conn: sqlite3.Connection, tasks: list[dict[str, Any]], found: d
     if not judge_id:
         names = ", ".join(repr(t["task_id"]) for t in worded)
         raise AgentError(f"nothing started: the criteria in words of {names} need a model to check them, and none is "
-                         "set for the role «Проверка цели» (the user picks it in the models' settings): give such "
-                         'tasks commands or {"checks": true} as criteria, or none and judge their answers yourself'
-                         )  # fmt: skip
+                         "set for the role «Проверка цели» (the user picks it in the models' settings): "  # i18n: keep
+                         'give such tasks commands or {"checks": true} as criteria, or none and judge their answers '
+                         "yourself")  # fmt: skip
     for task in worded:
         projects = []
         for pid in found[task["task_id"]]["project_ids"]:
