@@ -623,9 +623,50 @@ def test_a_cloud_coordinator_is_not_shown_a_local_only_projects_changes(hub, rep
     run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
     assert ended(hub, run_id)["status"] == "done"
     (said,) = outputs(hub, run_id)
-    assert agents.LOCAL_ONLY.format(name="proj").strip() in said["output"] and "print('a')" not in said["output"]
+    assert "[a] «Правщик» — done: it worked with «proj» - local-only (D10)" in said["output"]
+    assert "print('a')" not in said["output"]
     text, error = hub.portal.call(hub.app.state.agents.task_diff, run_id, {"task_id": "a"})
     assert not error and agents.LOCAL_ONLY.format(name="proj") in text and "print" not in text
+
+
+def test_a_cloud_model_is_not_told_what_a_local_only_projects_task_found(hub, repo):  # noqa: F811
+    """«Стабилизация» (61.1, D10): a local agent's task of a local-only project - its answer and the names of its
+    files reach no cloud model: not the cloud coordinator's board, not the prompt of a cloud task that waited for it,
+    not delegate_task's result; they say how it ended. A local coordinator is told all, as before."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local-only by default (D10)
+    tell = {"id": "d1", "name": "delegate_task", "input": {"agent": "Правщик", "task": "Поправь c"}}
+    cloudy = plug(hub, ByTask("cloudy", "cloud", {"Сделай": [[batch(("a", "Правщик", "Поправь a"),
+                                                                    ("b", "Облачный", "Сведи", ["a"]))]],
+                                                  "Поручи": [[tell]]}))  # fmt: skip
+    plug(hub, ByTask("fake", "local", {"Сделай здесь": [[batch(("a", "Правщик", "Поправь снова"))]]}, pause=0.02,
+                     edits={"Поправь a": edit(old="print('hi')", new="print('a')"),
+                            "Поправь снова": edit(old="print('hi')", new="print('b')")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    profile(hub, name="Облачный", model_id="cloudy/echo", tools=[])
+    boss = profile(hub, name="Координатор", model_id="cloudy/echo", tools=["delegate_tasks", "delegate_task"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    (said,) = outputs(hub, run_id)
+    hidden = "[a] «Правщик» — done: " + agents.LOCAL_ANSWER.format(names="«proj»")
+    assert hidden in said["output"], said["output"]
+    assert "ответ: Поправь a" not in said["output"] and "src/app.py" not in said["output"]
+    assert "[b] «Облачный» — done. Answer:\nответ: Сведи" in said["output"]  # its own project-less work: as before
+    (prompt,) = [task for ref, task in cloudy.started if task.startswith("Сведи")]
+    assert "[a] «Правщик»:\n" + agents.LOCAL_ANSWER.format(names="«proj»") in prompt and "ответ:" not in prompt
+    rows = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]
+    assert rows[0]["answer"] == "ответ: Поправь a"  # the window shows it whole
+
+    one = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Поручи"}).json()["id"]
+    assert ended(hub, one)["status"] == "done"
+    (said,) = outputs(hub, one)
+    assert said["output"] == "agent «Правщик» finished: " + agents.LOCAL_ANSWER.format(names="«proj»")
+
+    local_boss = profile(hub, name="Свой", tools=["delegate_tasks"])  # on fake/echo: local
+    near = hub.post(f"/v1/agents/{local_boss['id']}/runs", json={"task": "Сделай здесь"}).json()["id"]
+    assert ended(hub, near)["status"] == "done"
+    (said,) = outputs(hub, near)
+    assert "[a] «Правщик» — done. Answer:\nответ: Поправь снова" in said["output"]
+    assert "src/app.py" in said["output"] and "+print('b')" in said["output"]
 
 
 # --- a task's own files and model (stages 61.2, 61.3) ---

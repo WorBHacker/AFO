@@ -103,6 +103,12 @@ DIFF_SHOWN = 3000  # characters of a task's changes on the board, in short (61.1
 IN_SHORT = "\nWhat it changed, in short - the lines taken out (-) and put in (+); task_diff gives it whole:\n"
 LOCAL_ONLY = "«{name}» is local-only (D10): its changes are not shown to a cloud model\n"
 LOCAL_PAGES = "«{name}» is local-only (D10): its pages are not shown to a cloud model"
+# (Стабилизация, 61.1) what a task of a local-only project found - its answer, its files, its checks' words - a cloud
+# model is not told: the board, a dependent task's prompt, delegate_task's result say only how it ended
+LOCAL_ANSWER = (
+    "it worked with {names} - local-only (D10): its answer, files and checks are not shown to a cloud "
+    "model; the user sees them in AFO"
+)
 SECRET_PART = "(a file of secrets: its lines are not shown)\n"
 RESERVE_USD = 0.5  # what a batch keeps for a paid task whose agent has no budget of its own (16.4)
 CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
@@ -534,10 +540,17 @@ def changes_in_short(project: dict[str, Any], cloud: bool) -> str:
     return "".join(in_short(safe_part(path, part)) for path, part in diff_files(project["diff"], paths))
 
 
-def board(tasks: list[dict[str, Any]], changed: dict[str, list[dict[str, Any]]] | None = None) -> str:
+def local_names(conn: sqlite3.Connection, run_id: str | None) -> list[str]:
+    """The local-only projects a run worked with (D10), «named»: what it found is not told to a cloud model."""
+    return [f"«{p.name}»" for p in _attached(conn, run_id) if not p.cloud_ok] if run_id else []
+
+
+def board(tasks: list[dict[str, Any]], changed: dict[str, list[dict[str, Any]]] | None = None,
+          hidden: dict[str, list[str]] | None = None) -> str:  # fmt: skip
     """What the coordinator gets back: how many ended how, then each task with the agent's answer and, for one that
     wrote into a sandbox, the files it changed there - per project (16.2) - and the changes in short (61.1):
-    `changed` - per task, {name, paths, short} per project."""
+    `changed` - per task, {name, paths, short} per project. `hidden` - the tasks of local-only projects, for a cloud
+    coordinator (D10): only how each ended."""
     counts = collections.Counter(t["status"] for t in tasks)
     told = [f"{counts[s]} {s}" for s in STATUSES if counts[s]]
     lines = [f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}: {', '.join(told)}."]
@@ -545,6 +558,9 @@ def board(tasks: list[dict[str, Any]], changed: dict[str, list[dict[str, Any]]] 
         head = f"[{t['task_id']}] «{t['agent']}» — {t['status']}"
         if t["status"] == "skipped":
             lines.append(f"{head}: {t['detail']}")
+            continue
+        if t["task_id"] in (hidden or {}):
+            lines.append(f"{head}: " + LOCAL_ANSWER.format(names=", ".join(hidden[t["task_id"]])))
             continue
         if t["status"] == "done" and t.get("verdict"):  # its check passed (16.3)
             head += f" (checked: {t['detail']})"
@@ -838,10 +854,15 @@ class AgentRunner:
                 await self._gpu.acquire()
                 self._held.add(parent_id)
         try:
-            run, answer = await self._db.acall(lambda conn: (get_run(conn, child_id), _last_answer(conn, child_id)))
+            run, answer, names = await self._db.acall(lambda conn: (
+                get_run(conn, child_id), _last_answer(conn, child_id),
+                local_names(conn, child_id) if _cloud(conn, parent_id) else []))  # fmt: skip
         except AgentError:  # its chat was deleted meanwhile, and the run with it
             return "the sub-run's chat was deleted: it was stopped, and its answer is gone", True
         how = {"done": "finished", "error": "failed", "cancelled": "was stopped"}.get(run["status"], run["status"])
+        if names:  # a cloud coordinator, a local-only project's sub-run: how it ended only (D10)
+            said = f"agent «{run['profile_name']}» {how}: " + LOCAL_ANSWER.format(names=", ".join(names))
+            return said, run["status"] != "done"
         head = f"agent «{run['profile_name']}» {how}" + (f" ({run['detail']})" if run.get("detail") else "")
         return f"{head}. Its answer:\n{answer}" if answer else head, run["status"] != "done"
 
@@ -929,14 +950,21 @@ class AgentRunner:
         )  # fmt: skip
 
     async def _board_of(self, parent_id: str, number: int, cloud_here: bool) -> tuple[str, bool]:
-        """The board of a batch that ended - what the coordinator gets - and whether a task of it did not end done."""
-        ended = await self._db.acall(lambda conn: list_tasks(conn, parent_id, number))
+        """The board of a batch that ended - what the coordinator gets - and whether a task of it did not end done; a
+        cloud coordinator hears of a local-only project's task only how it ended (D10)."""
+
+        def read(conn):
+            ended = list_tasks(conn, parent_id, number)
+            hidden = {t["task_id"]: names for t in ended if cloud_here and (names := local_names(conn, t["run_id"]))}
+            return ended, hidden
+
+        ended, hidden = await self._db.acall(read)
         made = await self.task_changes(parent_id, number)
         changed = await asyncio.to_thread(lambda: {
             t["task_id"]: [{"name": p["name"], "paths": [f["path"] for f in p["files"]],
                             "short": changes_in_short(p, cloud_here)} for p in t["projects"]]
             for t in made})  # fmt: skip
-        return board(ended, changed), any(t["status"] != "done" for t in ended)
+        return board(ended, changed, hidden), any(t["status"] != "done" for t in ended)
 
     async def _resume_batch(self, coordinator: str, number: int, rows: list[dict[str, Any]]) -> None:
         """A batch the hub was running when it stopped, its coordinator waiting for it (61.5): its tasks go on; its
@@ -1099,8 +1127,13 @@ class AgentRunner:
                 if missed:
                     _mark(conn, parent_id, task_id, status="skipped", detail="; ".join(missed), ended_at=utc_now())
                     return None
-                found = [f"[{d}] «{rows[d]['agent']}»:\n{rows[d]['answer'] or '(no answer)'}"
-                         for d in task["dependencies"]]  # fmt: skip
+                model = store.get_model(conn, profile["model_id"])
+                cloudy = model is not None and model["locality"] == "cloud"  # not told a local-only one's (D10)
+                found = []
+                for d in task["dependencies"]:
+                    names = local_names(conn, rows[d]["run_id"]) if cloudy else []
+                    said = LOCAL_ANSWER.format(names=", ".join(names)) if names else rows[d]["answer"] or "(no answer)"
+                    found.append(f"[{d}] «{rows[d]['agent']}»:\n{said}")
                 prompt = task["prompt"] + ("\n\nWhat the tasks this one waited for found:\n\n" + "\n\n".join(found)
                                            if found else "")  # fmt: skip
                 if task.get("files"):  # its own files (61.2)
