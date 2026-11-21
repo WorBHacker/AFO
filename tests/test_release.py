@@ -101,7 +101,8 @@ def test_a_release_of_four_numbers_is_seen(hub, github):  # noqa: F811
     assert release.newer("0.1.17.1", "0.1.17") and release.newer("0.1.18", "0.1.17.1"), "a fourth number not seen"
     assert not release.newer("0.1.17.0", "0.1.17") and not release.newer("0.1.17", "0.1.17.0")
     assert release.version("v0.1.2.3.4") is None
-    later = f"{__version__}.1"
+    ours = [int(n) for n in __version__.split(".")]  # three numbers or four (0.1.18.1): the next one has four
+    later = ".".join(map(str, [*ours, 1] if len(ours) == 3 else [*ours[:3], ours[3] + 1]))
     published(tag=f"v{later}", name=f"AFO-Setup-{later}.exe")
     found = hub.post("/v1/release/check").json()
     assert found["newer"] and found["latest"] == later
