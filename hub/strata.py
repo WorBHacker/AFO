@@ -43,6 +43,12 @@ READY = "ready.json"
 RUN_TIMEOUT_S = 900.0  # an engine's install with its test start
 JOB_MEMORY = 1 << 40  # the job is for killing the whole tree; Strata minds its own memory
 DROPPED = ("PYTHON", "VIRTUAL_ENV", "CONDA", "STRATA_", "UV_", "CLAUDE", "ANTHROPIC", "LOCALCHAT_")
+ROOM_GIB = 3.0  # the program, the engine's archive and the engine unpacked (0.07 + 0.74 + 0.7 GB at most), twice over
+# (45.2б) where AFO puts Strata in by itself: its smallest model fits - Strata's own setup.py of control 0.1.64:
+# the Coder's only size, IQ1_M, «ram_gb» 32, a 58.4 GB download (the stand: 30 GB of RAM, a 16 GB card almost whole)
+SMALLEST = {"name": "Qwen3.8-Flash-Next Coder IQ1_M", "ram_gib": 32.0, "download_gb": 58.4}
+CARD_MIN_GIB = 8.0  # setup.py's SPLIT_MIN_VRAM_GB: a card holds the dense weights and the prompt's work
+RAM_ROOM_GIB = 3.0  # AFO's rule for what fits: the RAM less 3 GB - Windows 11 keeps about that (the user, 2026-11-12)
 
 
 class StrataError(EngineError):
@@ -51,6 +57,22 @@ class StrataError(EngineError):
 
 def home() -> Path:
     return engines_home() / "strata"
+
+
+def fits(build: str, vram_total_gib: float, ram_total_gib: float) -> bool:
+    """Whether Strata's smallest model is for this computer: llama.cpp's CUDA build (an NVIDIA card with its
+    driver - Strata's engine AFO fetches is CUDA's), 8 GB on the card, its experts in the RAM less AFO's room."""
+    return (build.startswith("cuda") and vram_total_gib >= CARD_MIN_GIB
+            and ram_total_gib - RAM_ROOM_GIB >= SMALLEST["ram_gib"])  # fmt: skip
+
+
+def persons_own(environ: dict[str, str] | None = None) -> Path | None:
+    """The person's own Strata - the one-line installer's terminal in %LOCALAPPDATA%\\Strata - or None. Where there
+    is one, AFO puts none of its own in: two would share the person's remembered installs and models."""
+    environ = os.environ if environ is None else environ
+    local = environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    found = Path(local) / "Strata" / "terminal"
+    return found if found.is_dir() and any(found.glob("*/strata.py")) else None
 
 
 def data(base: Path) -> Path:
@@ -172,6 +194,9 @@ def install(assets: dict[str, dict[str, Any]], base: Path, *, report: Callable[[
     by Strata from the downloads folder - its own feed. The downloads go afterwards."""
     downloads = base / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(downloads).free / 2**30
+    if free < ROOM_GIB:
+        raise StrataError(tr("для Strata нужно {need:g} ГБ на диске, свободно {free:.1f} ГБ", need=ROOM_GIB, free=free))
     first = [assets[n] for n in (CONTROL, *FEED)]
     total = sum(a["size"] for a in first)
     done = _download(first, downloads, 0, lambda n, extra=0: report(n, total + extra), cancel)

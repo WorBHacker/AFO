@@ -17,7 +17,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hub import engines, strata
+from common import hardware
+from hub import engines, resources, strata
 
 ENGINE = "strata-engine-0.1.64-windows-x86_64-cuda-cuda13.tar.gz"
 ENGINE_BYTES = b"engine " * 1000
@@ -79,6 +80,7 @@ class FakeGitHub(BaseHTTPRequestHandler):
     port = 0
     files: dict[str, bytes] = {}  # noqa: RUF012 - the release's files, set by the fixture
     digests: dict[str, str] = {}  # noqa: RUF012 - a name -> the sha256 GitHub gives ("" - none)
+    asked: list[str] = []  # noqa: RUF012 - every path asked for
 
     def log_message(self, *args):
         pass
@@ -92,6 +94,7 @@ class FakeGitHub(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        self.asked.append(self.path)
         url = f"http://127.0.0.1:{self.port}/download/"
         if self.path == f"/repos/{strata.REPO}/releases/tags/{strata.TAG}":
             assets = []
@@ -121,7 +124,7 @@ def release_files(feed_sha: str | None = None) -> dict[str, bytes]:
 def github(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
     FakeGitHub.port = server.server_port
-    FakeGitHub.files, FakeGitHub.digests = release_files(), {}
+    FakeGitHub.files, FakeGitHub.digests, FakeGitHub.asked = release_files(), {}, []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{server.server_port}")
     yield FakeGitHub
@@ -182,3 +185,55 @@ def test_an_engine_not_of_the_release_or_unchecked_is_not_put_in(github, tmp_pat
     github.files, github.digests = release_files(), {strata.CONTROL: ""}
     with pytest.raises(strata.StrataError, match="контрольную сумму"):
         assets()
+
+
+def a_computer(monkeypatch, tmp_path, *, vendor="nvidia", vram=16.0, ram=63.4, cuda=True):
+    """The card and the memory the scanner reads (the user's computer by default: an RTX 5080 of 16 GB, 63.4 GB of
+    RAM, CUDA 13's driver) - and no Strata of the person's in their %LOCALAPPDATA%."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "persons-local"))
+    name = "NVIDIA GeForce RTX 5080" if vendor == "nvidia" else "Radeon RX 9070"
+    monkeypatch.setattr(hardware, "adapters", lambda: [{"name": name, "vendor": vendor, "vram_gib": vram,
+                                                        "driver": "32.0"}])  # fmt: skip
+    driver = {"version": "621.14", "cuda": 13050, "compute": [12, 0]} if cuda and vendor == "nvidia" else None
+    monkeypatch.setattr(hardware, "nvidia_driver", lambda: driver)
+    monkeypatch.setattr(resources, "memory_sample", lambda: {"ram_total_gib": ram})
+
+
+def scanner(enabled=True) -> resources.Resources:
+    from types import SimpleNamespace
+
+    return resources.Resources(None, SimpleNamespace(), url="http://127.0.0.1:9", enabled=enabled)
+
+
+def test_the_scanner_puts_strata_in_where_its_smallest_model_fits(github, monkeypatch, tmp_path):
+    """45.2б (the user's word 2026-11-12: «AFO ставит её сам там, где её модели помещаются»): an NVIDIA card of 16 GB
+    and 63.4 GB of RAM - the Coder's 32 GB fit - Strata is fetched by itself, once; its models stay a click."""
+    a_computer(monkeypatch, tmp_path)
+
+    async def run():
+        found = scanner()
+        first = await found.strata_check()
+        again = await found.strata_check()  # the window looks again meanwhile: the one fetch going on
+        await found._strata
+        return first, again, await found.strata_check()
+
+    first, again, then = asyncio.run(run())
+    assert first["status"] == again["status"] == "fetching" and then == {"status": "ready", "words": ""}
+    assert strata.installed(strata.home()) is not None
+    assert github.asked.count(f"/repos/{strata.REPO}/releases/tags/{strata.TAG}") == 1
+
+
+@pytest.mark.parametrize("computer", [{"vendor": "amd"}, {"cuda": False}, {"vram": 6.0}, {"ram": 32.0}])
+def test_where_it_does_not_fit_or_is_the_persons_strata_is_not_fetched(github, monkeypatch, tmp_path, computer):
+    """An AMD card, an NVIDIA card without CUDA's driver, 6 GB on the card, 32 GB of RAM (29 of them for the
+    experts): nothing fetched, nothing said. The person's own Strata - and the switch off - neither."""
+    a_computer(monkeypatch, tmp_path, **computer)
+    assert asyncio.run(scanner().strata_check())["status"] == "unfit"
+    a_computer(monkeypatch, tmp_path)
+    terminal = tmp_path / "persons-local" / "Strata" / "terminal" / "0.1.51"
+    terminal.mkdir(parents=True)
+    (terminal / "strata.py").write_text("")
+    assert asyncio.run(scanner().strata_check())["status"] == "own"
+    (terminal / "strata.py").unlink()
+    assert asyncio.run(scanner(enabled=False).strata_check())["status"] == "off"
+    assert github.asked == [] and not strata.home().exists()

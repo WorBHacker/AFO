@@ -12,16 +12,19 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from common import hardware
 from common.i18n import tr
 from common.paths import engines_home
 
-from . import autostart, llama_config
+from . import autostart, llama_config, strata
 from .db import utc_now
+from .system_status import memory_sample
 from .tuning import BENCH, server_path
 
 if TYPE_CHECKING:
@@ -81,8 +84,16 @@ class Resources:
         self._again: asyncio.Task | None = None  # a failed fetch's next try
         self.state: dict[str, Any] = {"status": "idle"}
         setup.on_finished = self._finished
+        self._strata: asyncio.Task | None = None  # (45.2б) AFO's own Strata being put in
+        self._strata_cancel = threading.Event()
+        self._strata_failed: tuple[float, str] | None = None  # when and why it last failed
+        self.strata_progress: tuple[int, int] = (0, 0)  # bytes fetched, of
 
     async def stop(self) -> None:
+        self._strata_cancel.set()
+        if self._strata is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._strata
         if self._again is not None:
             self._again.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -94,9 +105,11 @@ class Resources:
         program gone after the install (an antivirus) is said, not fetched."""
         found = await asyncio.to_thread(scan)
         if found["ready"] or await llama_swap_answers(self._url):
-            if found["ready"] and await asyncio.to_thread(afo_own):
+            own = found["ready"] and await asyncio.to_thread(afo_own)
+            if own:
                 await self._db.acall(lambda conn: _keep_seen(conn, [found["start"], found["server"]]))
-            self.state = {**found, "status": "ready", "words": ""}
+            self.state = {**found, "status": "ready", "words": "",
+                          "strata": await self.strata_check() if own else {"status": "own", "words": ""}}  # fmt: skip
             return self.state
         lacking = ", ".join(m["path"] or m["what"] for m in found["missing"] if m["what"] != "llama-bench")
         if not await asyncio.to_thread(afo_own):
@@ -132,6 +145,49 @@ class Resources:
             self._setup.start(build, auto=True)
         self.state = {**found, "status": "fetching", "words": tr("Скачиваю программу для локальных моделей…")}
         return self.state
+
+    async def strata_check(self) -> dict[str, Any]:
+        """(45.2б) {status: ready | fetching | failed | own | unfit | off, words}: AFO's own Strata, put in by itself
+        where its smallest model fits (strata.fits: llama.cpp's CUDA build, 8 GB on the card, RAM for the experts)
+        and the person has no Strata of their own; one fetch at a time, a failed one tried again RETRY_S later, at a
+        look. Its models still come by a click (the user's word 2026-11-12)."""
+        base = strata.home()
+        if await asyncio.to_thread(strata.installed, base):
+            return {"status": "ready", "words": ""}
+        if self._strata is not None and not self._strata.done():
+            done, total = self.strata_progress
+            return {"status": "fetching", "words": tr("Скачиваю Strata… {done} из {total} МБ", done=done >> 20,
+                                                      total=total >> 20)}  # fmt: skip
+        if await asyncio.to_thread(strata.persons_own) is not None:
+            return {"status": "own", "words": tr("Strata у вас своя — AFO свою не ставит и вашу не трогает")}
+        cards = await asyncio.to_thread(hardware.adapters)
+        build = hardware.build_for(cards, await asyncio.to_thread(hardware.nvidia_driver))["build"]
+        vram = max((c.get("vram_gib") or 0.0 for c in cards if c.get("vendor") == "nvidia"), default=0.0)
+        ram = (await asyncio.to_thread(memory_sample) or {}).get("ram_total_gib") or 0.0
+        if not strata.fits(build, vram, ram):
+            return {"status": "unfit", "words": ""}
+        if not self._enabled:
+            return {"status": "off", "words": tr("Strata не установлена")}
+        if self._strata_failed is not None and time.monotonic() - self._strata_failed[0] < RETRY_S:
+            return {"status": "failed", "words": tr("Strata не скачалась: {error}. Попробую снова позже",
+                                                    error=self._strata_failed[1])}  # fmt: skip
+        log.info("Strata's smallest model fits here (%s, %.1f GB on the card, %.1f GB of RAM): putting Strata in",
+                 build, vram, ram)  # fmt: skip
+        self._strata = asyncio.create_task(self._fetch_strata(base))
+        return {"status": "fetching", "words": tr("Скачиваю Strata…")}
+
+    async def _fetch_strata(self, base) -> None:
+        def report(done: int, total: int) -> None:
+            self.strata_progress = (done, total)
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                assets = await strata.release(http)
+            await asyncio.to_thread(strata.install, assets, base, report=report, cancel=self._strata_cancel)
+            self._strata_failed = None
+        except Exception as exc:
+            log.warning("Strata was not put in: %s", exc)
+            self._strata_failed = (time.monotonic(), str(exc))
 
     def _wait(self) -> float:
         """How long a failed fetch still waits before the next try."""
