@@ -535,10 +535,13 @@ class Tuner:
     async def _work(self) -> None:
         while self._queue:
             model_id, automatic, background = self._queue[0]
+            # «Остановить» while the switch is read (portion 2, step 1): the queue is emptied - or another's by now
+            stops = self._stops
             if automatic and not await self._db.acall(auto):
-                self._queue.pop(0)
+                if self._stops == stops:
+                    self._queue.pop(0)
                 continue
-            if not await self._wait(background, model_id):  # «Остановить» while it waited (0.1.15 3а)
+            if not await self._wait(background, model_id, stops):  # «Остановить» while it waited (0.1.15 3а)
                 self.job = {"status": "idle"}
                 await self._publish()
                 continue
@@ -549,13 +552,14 @@ class Tuner:
             finally:
                 self._card.give(TUNE)  # taken in `_wait`
 
-    async def _wait(self, background: bool, model_id: str) -> bool:
+    async def _wait(self, background: bool, model_id: str, stops: int) -> bool:
         """Until the card is still (48.9б2: no local request - a cloud chat is not on the card -, nobody holding it,
         its load low, no game on it; a download is not on it) - by the person's «Подобрать» at once, background work
         (automatic, stopped by a senior) once it has been still for QUIET_S, counted from now; then the card is
         tuning's (48.9б1: TUNE, from local requests too), taken in the same step; a senior stops it (`_stop`). False -
-        «Остановить» came meanwhile (0.1.15 3а): the card is not taken."""
-        quiet, stops = Quiet(self._card), self._stops
+        «Остановить» came meanwhile (0.1.15 3а), since `stops` was counted (portion 2, step 1: before the switch was
+        read): the card is not taken."""
+        quiet = Quiet(self._card)
         while True:
             if self._stops != stops:
                 return False

@@ -9,6 +9,7 @@ import contextlib
 import json
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -448,6 +449,54 @@ def test_stop_is_not_a_failure(hub, setup, tmp_path, monkeypatch):  # noqa: F811
 
     asyncio.run(again())
     assert found.results["big"]["status"] == "better" and found._card.holder == ""
+
+
+def test_a_stop_while_the_switch_is_read_ends_the_tuning_cleanly(hub, setup, monkeypatch):  # noqa: F811
+    """«Стабилизация», portion 2, step 1 (found at 0.1.15 3а): automatic tuning reads the switch «Подбирать сам»
+    from the database before it waits for the card - «Остановить» in that moment emptied the queue, and the tuning fell
+    on it (`IndexError`): with the switch off at once; with it on once it had taken the card - and the card stayed the
+    tuning's, local chats waiting for it until the hub restarted. Now the stop is seen there: nothing measured, the
+    card free, the next «Подобрать» goes. The database is the hub's own; only its read is held for the moment."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.1)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    reading, read = threading.Event(), threading.Event()
+    switch = {"on": False}
+    real = tuning.auto
+
+    def held(conn):  # the switch read from the database - «Остановить» comes meanwhile
+        reading.set()
+        read.wait(5)
+        return real(conn) and switch["on"]
+
+    monkeypatch.setattr(tuning, "auto", held)
+    before = setup.read_text(encoding="utf-8")
+    for on in (False, True):
+        setup.write_text(before, encoding="utf-8")
+        switch["on"] = on
+        reading.clear()
+        read.clear()
+        found = tuner(hub, measured={"q8_0": [(512, 900, 40), (2048, 1500, 52)]})
+
+        async def stopped(found):
+            found.request("big", auto=True)
+            await until(reading.is_set, "the switch is read")
+            found.cancel()
+            read.set()
+            await until(found._task.done, "the tuning ends")
+            await asyncio.sleep(0.3)  # the switch on: it would have waited for the quiet (QUIET_S) and taken the card
+            return found._task.exception()
+
+        error = asyncio.run(stopped(found))
+        assert error is None, f"the switch {'on' if on else 'off'}: the tuning fell - {error!r}"
+        assert found._card.holder == "" and found._card.free.is_set(), "the card stays the tuning's: local chats wait"
+        assert "big" not in found.results and found.job["status"] == "idle" and not found._queue
+
+        async def again(found):  # «Подобрать» after it: measured
+            found.request("big")
+            await until(lambda: "big" in found.results, "measured by hand after the stop")
+
+        asyncio.run(again(found))
+        assert found.results["big"]["status"] == "better" and found._card.holder == ""
 
 
 def test_stopped_after_its_settings_were_written_keeps_what_they_gave(hub, setup):  # noqa: F811
