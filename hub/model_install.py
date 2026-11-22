@@ -60,7 +60,7 @@ from common.llama_memory import (
 )
 from common.paths import NAME, engines_home, models_home
 
-from . import engines, hf, llama_config, runtimes, store, visual
+from . import engines, hf, llama_config, runtimes, store, strata, visual
 from .db import utc_now
 from .gpu_card import GIVEN_WORDS, TRIAL, GpuCard, Played, Quiet, named
 from .model_scan import SPLIT, ollama_names
@@ -126,6 +126,12 @@ VERDICTS = {
     "split_moe": N_("часть в ОЗУ — у модели из «экспертов» это замедляет немного"),
     "cpu": N_("без видеокарты — в ОЗУ, медленно"),
     "no": N_("не поместится: не хватает памяти"),
+}
+# (45.2в) a model of AFO's Strata on this computer (strata.verdict)
+STRATA_VERDICTS = {
+    "fits": N_("помещается: эксперты модели — в ОЗУ, видеокарта — почти вся"),
+    "slower": N_("медленнее: эксперты не помещаются в ОЗУ, Strata читает часть с диска"),
+    "no": N_("Strata работает на видеокарте NVIDIA от 8 ГБ"),
 }
 # a picture or video model's verdict (the fix after 0.1.15): beside it the window says how much goes on the card and
 # how much into the computer's memory - picture_place
@@ -1675,6 +1681,67 @@ class Installer:
         self._kick()
         return await self._db.acall(lambda conn: job(conn, job_id))
 
+    async def strata_catalog(self) -> dict[str, Any]:
+        """(45.2в) AFO's own Strata and the models AFO installs through it, judged for this computer: {ready - the
+        scanner has put it in (where its smallest model fits), models: [{id, name, purposes, ram_gib, download_gb,
+        verdict (strata.verdict), words}]}."""
+        ready = await asyncio.to_thread(strata.installed, strata.home())
+        build, vram, ram = await asyncio.to_thread(strata.computer)
+        models = []
+        for key, entry in strata.MODELS.items():
+            verdict = strata.verdict(key, build, vram, ram)
+            models.append({"id": key, "name": entry["name"], "purposes": entry["purposes"],
+                           "ram_gib": entry["ram_gib"], "download_gb": entry["download_gb"], "verdict": verdict,
+                           "words": tr(STRATA_VERDICTS[verdict])})  # fmt: skip
+        return {"ready": ready, "models": models}
+
+    async def install_strata(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
+        """(45.2в) A model of AFO's Strata (strata.MODELS): {id, drive or folder}. Strata downloads it from Hugging
+        Face itself into the install's own folder and makes it ready there without starting it (strata.prepare); then
+        its block is written and tried once, the card the trial's (34.4: no tuning, no Studio beside it - Strata
+        takes it almost whole, 45.0). Only through AFO's own Strata, which the scanner puts in; the person's own is
+        not touched."""
+        key = spec["id"]
+        entry = strata.MODELS.get(key)
+        if entry is None:
+            raise InstallError(tr("в списке нет модели {model}", model=key), 404)
+        if not await asyncio.to_thread(strata.installed, strata.home()):
+            raise InstallError(tr("Strata ещё не установлена: AFO ставит её сам там, где её модели помещаются"))
+        build, vram, ram = await asyncio.to_thread(strata.computer)
+        if strata.verdict(key, build, vram, ram) == "no":
+            raise InstallError(tr("{name}: {words}", name=entry["name"], words=tr(STRATA_VERDICTS["no"])))
+        rows = await self._db.acall(jobs)
+        same = next((r for r in rows if r["plan"].get("strata") == key
+                     and r["status"] not in ("cancelled", "removed")), None)  # fmt: skip
+        if same and same["status"] == "done":
+            raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
+        if same:
+            return same
+        folder = self._root(spec, await asyncio.to_thread(self.drives)) / "strata" / key  # Strata's own folders in it
+        total = int(entry["download_gb"] * 1e9)
+        try:
+            await asyncio.to_thread(_check_room, folder, total + int(strata.EXTRA_GB * 1e9))
+        except OSError as exc:
+            raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
+                               422) from exc  # fmt: skip
+        model_id = llama_config.free_id(await asyncio.to_thread(config_text), key)  # _configure_strata looks again
+        plan = {"engine": runtimes.STRATA, "strata": key, "context": strata.CONTEXT}
+        job_id = uuid.uuid4().hex[:12]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
+                "license, status, total_bytes, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (job_id, strata.REPO, strata.TAG, entry["model"], "[]", str(folder), model_id, entry["name"],
+                 json.dumps(entry["purposes"]), "", total, json.dumps(plan)),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        self._clients[job_id] = client
+        await self._publish(job_id)
+        self._kick()
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
     def _root(self, spec: dict[str, Any], drives: list[dict[str, Any]]) -> Path:
         """Where a model goes: the folder asked for, the drive's AFO folder, or AFO's own `model` folder."""
         if spec.get("folder"):
@@ -1979,11 +2046,19 @@ class Installer:
         cancel = self._cancel[job_id] = threading.Event()
         self._wanted.pop(job_id, None)
         try:
+            engine = found["plan"].get("engine")
             if found["status"] == "trialwait":  # «Пробный запуск» of a model added (34.5), a trial a senior stopped
-                pictures = found["plan"].get("engine") == "sd"  # (48.9в): in the config already
+                pictures = engine == "sd"  # (48.9в): in the config already
                 await self._card(job_id, cancel, chats=pictures, background=job_id in self._quiet)
                 found = await self._get(job_id)
-                await (self._try_picture(found, True) if pictures else self._try(found, True))
+                trial = self._try_picture if pictures else self._try_strata if engine == runtimes.STRATA else self._try
+                await trial(found, True)
+                return
+            if engine == runtimes.STRATA:  # (45.2в) Strata downloads and prepares it, then the card for its trial -
+                await self._prepare_strata(found, cancel)  # its question a chat's: through the gate, as a chat model's
+                await self._card(job_id, cancel)
+                reachable = await self._configure_strata(await self._get(job_id))
+                await self._try_strata(await self._get(job_id), reachable)
                 return
             await self._download(found, cancel)
             await self._engine_wait(job_id, cancel)
@@ -2123,16 +2198,17 @@ class Installer:
 
         return report
 
-    def _send(self, job_id: str, done: int, total: int) -> None:
-        task = asyncio.create_task(self._progress(job_id, done, total))
+    def _send(self, job_id: str, done: int, total: int, words: str = "") -> None:
+        task = asyncio.create_task(self._progress(job_id, done, total, words))
         self._sending.add(task)
         task.add_done_callback(self._sending.discard)
 
-    async def _progress(self, job_id: str, done: int, total: int) -> None:
+    async def _progress(self, job_id: str, done: int, total: int, words: str = "") -> None:
         await self._db.acall(lambda conn: _update(conn, job_id, done_bytes=done))
         end = self._engine_end.get(job_id)  # the engine from GitHub on its way: how much of it is left (after 0.1.16)
         shown = {"id": job_id, "done_bytes": done, "total_bytes": total, "speed": round(self.speed.get(job_id, 0.0)),
-                 "engine_left": max(end - done, 0) if end is not None else 0}  # fmt: skip
+                 "engine_left": max(end - done, 0) if end is not None else 0,
+                 **({"words": words} if words else {})}  # fmt: skip
         await self._bus.publish("install.progress", shown, persist=False)
 
     async def _download(self, found: dict[str, Any], cancel: threading.Event) -> None:
@@ -2396,6 +2472,108 @@ class Installer:
                         error=tr("модель скачана, но пробная картинка не вышла: {error}. Файлы остались — "
                                  "«Повторить» попробует снова; или удалите", error=error))  # fmt: skip
 
+    def _strata_reporter(self, job_id: str, total: int) -> Callable[[str, float | None, str], None]:
+        """Strata's steps into the window (45.2в): the model's download share as bytes of its size - never back, its
+        later steps start at 0 - and Strata's own words (English: its own) beside it."""
+        loop = asyncio.get_running_loop()
+        shown: dict[str, Any] = {"done": 0, "at": 0.0, "words": ""}
+
+        def report(stage: str, pct: float | None, text: str) -> None:  # in the preparation's thread
+            if stage == "model" and pct is not None:
+                shown["done"] = max(shown["done"], int(total * min(float(pct), 100.0) / 100))
+            now = time.monotonic()
+            if text == shown["words"] and now - shown["at"] < PROGRESS_S:
+                return
+            shown.update(at=now, words=text)
+            loop.call_soon_threadsafe(self._send, job_id, shown["done"], total, text)
+
+        return report
+
+    async def _prepare_strata(self, found: dict[str, Any], cancel: threading.Event) -> None:
+        """(45.2в) Strata downloads the model into the install's folder and prepares it - nothing loaded, the card
+        free meanwhile; «Приостановить» stops it and «Продолжить» goes on where its download stopped (Strata's own)."""
+        job_id, folder = found["id"], Path(found["folder"])
+        await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
+        await self._set(job_id, status="downloading", error="")
+        report = self._strata_reporter(job_id, found["total_bytes"])
+        try:
+            prepared = await asyncio.to_thread(strata.prepare, strata.home(), found["plan"]["strata"], folder,
+                                               report=report, cancel=cancel,
+                                               context=found["plan"]["context"])  # fmt: skip
+        except strata.StrataError as exc:
+            if cancel.is_set():
+                raise hf.Cancelled() from exc
+            raise InstallError(str(exc), 502) from exc
+        await self._set(job_id, done_bytes=found["total_bytes"], plan={**found["plan"], **prepared})
+
+    async def _configure_strata(self, found: dict[str, Any]) -> bool:
+        """(45.2в) The model's block: Strata's `serve` of the run config it prepared, with its own folders (strata.
+        serve_env); whether llama-swap answered (and read it)."""
+        job_id, plan = found["id"], found["plan"]
+        await self._set(job_id, status="configuring", error="")
+        base, path = strata.home(), llama_config.config_path()
+        async with llama_config.writing():  # 34.4: no other writer between this read and llama-swap's reread
+            text = await asyncio.to_thread(config_text)
+            model_id = found["model_id"]
+            if model_id in llama_config.model_blocks(text):
+                if _ours(text, model_id, job_id):
+                    text = llama_config.remove_model(text, model_id)  # an earlier try of this install: written anew
+                else:
+                    model_id = llama_config.free_id(text, model_id)  # someone else's model took the name meanwhile
+            block = llama_config.strata_block(
+                model_id,
+                name=found["name"],
+                description=tr("{name}, установлена AFO: работает через Strata.", name=found["name"]),
+                command=strata.command(base),
+                profile=plan["config"],
+                env=await asyncio.to_thread(strata.serve_env, base),
+                context=plan["context"],
+                ttl=SPLIT_TTL_S,  # its experts in the RAM and the card almost whole: let go when not asked
+                metadata={"source": f"github.com/{strata.REPO}", "license": "?", "localchat_install": job_id},
+            )
+            new = llama_config.add_model(text, model_id, block)
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
+        await self._set(job_id, model_id=model_id)
+        await self._sync()
+        await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
+        return ok
+
+    async def _try_strata(self, found: dict[str, Any], reachable: bool) -> None:
+        """(45.2в) The trial: the model answers one question through llama-swap. No smaller settings to try - Strata
+        chose them - and no tuning or draft afterwards (its own engine guesses ahead)."""
+        job_id, model_id = found["id"], found["model_id"]
+        client = self._clients.get(job_id)
+        if not reachable or self.trial is None or client is None:
+            why = tr("llama-swap не отвечает — модель проверится при первом разговоре") if not reachable else \
+                tr("проверка запуска не выполнялась")  # fmt: skip
+            await self._set(job_id, status="done", trial={"skipped": why})
+            return
+        await self._set(job_id, status="trial")
+        model = await self._model(model_id)
+        if model is None:
+            result = {"ok": False, "error": tr("хаб не видит модель в списке llama-swap")}
+        else:
+            try:
+                with named(TRIAL):  # its request at the gate is the trial's (48.9а)
+                    result = await self._attempt(self.trial(model, client))
+            except _Deferred:
+                raise
+            except Exception as exc:  # the check's own refusal (HTTPException) or a provider's trouble
+                result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
+        if result.get("ok"):
+            await self._set(job_id, status="done", trial={"seconds": result.get("seconds"), "tok_s": result.get(
+                "tok_s"), "ttft_s": result.get("ttft_s")})  # fmt: skip
+            return
+        await self._withdraw(model_id)
+        await self._set(job_id, status="failed", error=tr(
+            "модель скачана, но не запустилась: {error}. Файлы остались — «Повторить» попробует снова; или удалите",
+            error=result.get("error") or tr("нет ответа")))  # fmt: skip
+
     def _done(self, model_id: str) -> None:
         if self.on_done is not None:
             self.on_done(model_id)
@@ -2624,6 +2802,16 @@ def _delete_files(found: dict[str, Any], kept: set[str] | frozenset[str] = froze
     if not found.get("own_files", 1):
         return
     folder = Path(found["folder"])
+    if (found.get("plan") or {}).get("engine") == runtimes.STRATA:  # (45.2в) its folder is Strata's of this model
+        for _ in range(10):  # a model just let go: Windows may hold its files a moment longer
+            engines.remove_tree(folder)
+            if not folder.exists():
+                break
+            time.sleep(0.5)
+        strata.forget(strata.home(), found["plan"])
+        with contextlib.suppress(OSError):
+            folder.parent.rmdir()  # `strata`, with its last model
+        return
     away: list[Path] = []
     for f in found["files"]:
         if f["role"] == "engine":

@@ -1011,6 +1011,26 @@ def model_block(model_id: str, *, name: str, description: str, server: str, mode
     return "\n".join(lines)
 
 
+def strata_block(model_id: str, *, name: str, description: str, command: list[str], profile: str, env: list[str],
+                 context: int, ttl: int = 0, metadata: dict[str, Any] | None = None) -> str:  # fmt: skip
+    """(45.2в) A model of AFO's Strata: `serve --profile` of the run config Strata prepared, as the stand ran it under
+    llama-swap (45.0) and the person's own Strata models are written; `env` - Strata's own folders and a PATH without
+    another Strata (strata.serve_env), in single quotes: Windows' backslashes stay as they are."""
+    program, script = (quoted(part.replace(os.sep, "/")) for part in command)
+    lines = [f"  {quoted(model_id)}:", f"    name: {quoted(name)}", f"    description: {quoted(description)}"]
+    if ttl:
+        lines.append(f"    ttl: {ttl}")
+    run = quoted(profile.replace(os.sep, "/"))
+    lines += ["    cmd: |", f"      {program} {script} serve", f"      --profile {run}",
+              "      --host 127.0.0.1 --port ${PORT}", "    env:"]  # fmt: skip
+    lines += ["      - '" + entry.replace("'", "''") + "'" for entry in env]
+    lines += ["    checkEndpoint: /health", "    metadata:", f"      engine: {runtimes.STRATA}",
+              f"      context: {context}"]  # fmt: skip
+    for key, value in (metadata or {}).items():
+        lines.append(f"      {key}: {quoted(str(value))}")
+    return "\n".join(lines)
+
+
 def sd_block(model_id: str, *, name: str, description: str, server: str, files: dict[str, str], flags: list[str],
              metadata: dict[str, Any] | None = None) -> str:  # fmt: skip
     """A picture model's block (D55, 29.3): sd-server with its set of files (`--diffusion-model`, `--llm`, `--vae`…:

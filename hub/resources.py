@@ -18,13 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from common import hardware
 from common.i18n import tr
 from common.paths import engines_home
 
 from . import autostart, llama_config, strata
 from .db import utc_now
-from .system_status import memory_sample
 from .tuning import BENCH, server_path
 
 if TYPE_CHECKING:
@@ -160,10 +158,7 @@ class Resources:
                                                       total=total >> 20)}  # fmt: skip
         if await asyncio.to_thread(strata.persons_own) is not None:
             return {"status": "own", "words": tr("Strata у вас своя — AFO свою не ставит и вашу не трогает")}
-        cards = await asyncio.to_thread(hardware.adapters)
-        build = hardware.build_for(cards, await asyncio.to_thread(hardware.nvidia_driver))["build"]
-        vram = max((c.get("vram_gib") or 0.0 for c in cards if c.get("vendor") == "nvidia"), default=0.0)
-        ram = (await asyncio.to_thread(memory_sample) or {}).get("ram_total_gib") or 0.0
+        build, vram, ram = await asyncio.to_thread(strata.computer)
         if not strata.fits(build, vram, ram):
             return {"status": "unfit", "words": ""}
         if not self._enabled:

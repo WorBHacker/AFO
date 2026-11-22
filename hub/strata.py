@@ -28,11 +28,13 @@ from typing import Any
 
 import httpx
 
+from common import hardware
 from common.i18n import tr
 from common.paths import engines_home
 
 from . import engines, hf, winjob
 from .engines import EngineError
+from .system_status import memory_sample
 
 REPO = "Niko1221/Strata"
 TAG = "v0.2.18"  # checked on the stand 2026-11-22 (45.0); Strata itself is never asked to update (`strata update`)
@@ -44,10 +46,28 @@ RUN_TIMEOUT_S = 900.0  # an engine's install with its test start
 JOB_MEMORY = 1 << 40  # the job is for killing the whole tree; Strata minds its own memory
 DROPPED = ("PYTHON", "VIRTUAL_ENV", "CONDA", "STRATA_", "UV_", "CLAUDE", "ANTHROPIC", "LOCALCHAT_")
 ROOM_GIB = 3.0  # the program, the engine's archive and the engine unpacked (0.07 + 0.74 + 0.7 GB at most), twice over
-# (45.2б) where AFO puts Strata in by itself: its smallest model fits - Strata's own setup.py of control 0.1.64:
-# the Coder's only size, IQ1_M, «ram_gb» 32, a 58.4 GB download (the stand: 30 GB of RAM, a 16 GB card almost whole)
-SMALLEST = {"name": "Qwen3.8-Flash-Next Coder IQ1_M", "ram_gib": 32.0, "download_gb": 58.4}
+# (45.2в) the models AFO installs through Strata - its own packs of Qwen3.8-Flash-Next (the user's choice: a plain
+# Flash-Next file stays llama.cpp's), as Strata's own setup.py of control 0.1.64 lists them: the family and size it
+# is asked for, the RAM its experts want («ram_gb»), the download («download_gb»). The stand ran the Coder: 30 GB of
+# RAM, a 16 GB card almost whole (45.0).
+MODELS: dict[str, dict[str, Any]] = {
+    "flash-next-coder-iq1_m": {"family": "coder", "model": "IQ1_M", "name": "Qwen3.8-Flash-Next Coder IQ1_M",
+                               "ram_gib": 32.0, "download_gb": 58.4, "purposes": ["code", "chat"]},
+    "flash-next-q2_0": {"family": "qwen", "model": "Q2_0", "name": "Qwen3.8-Flash-Next Q2_0", "ram_gib": 48.0,
+                        "download_gb": 66.4, "purposes": ["chat", "code"]},
+    "flash-next-iq2_xs": {"family": "qwen", "model": "IQ2_XS", "name": "Qwen3.8-Flash-Next IQ2_XS", "ram_gib": 48.0,
+                          "download_gb": 68.0, "purposes": ["chat", "code"]},
+    "flash-next-iq3_xxs": {"family": "qwen", "model": "IQ3_XXS", "name": "Qwen3.8-Flash-Next IQ3_XXS",
+                           "ram_gib": 60.0, "download_gb": 75.8, "purposes": ["chat", "code"]},
+    "flash-next-iq3_s": {"family": "qwen", "model": "IQ3_S", "name": "Qwen3.8-Flash-Next IQ3_S", "ram_gib": 62.0,
+                         "download_gb": 83.6, "purposes": ["chat", "code"]},
+}  # fmt: skip
+# (45.2б) where AFO puts Strata in by itself: its smallest model fits
+SMALLEST = "flash-next-coder-iq1_m"
+CONTEXT = 65536  # what a model is made ready with: the stand's run (45.0); the window changes it later (45.1в)
+PREPARE_TIMEOUT_S = 12 * 3600.0  # tens of GB from Hugging Face on a slow line
 CARD_MIN_GIB = 8.0  # setup.py's SPLIT_MIN_VRAM_GB: a card holds the dense weights and the prompt's work
+EXTRA_GB = 8.0  # what Strata adds to a model in its folder: the MTP layer 5.2, DFlash2 1.2, the pack 1.5 GB (45.0)
 RAM_ROOM_GIB = 3.0  # AFO's rule for what fits: the RAM less 3 GB - Windows 11 keeps about that (the user, 2026-11-12)
 
 
@@ -62,8 +82,7 @@ def home() -> Path:
 def fits(build: str, vram_total_gib: float, ram_total_gib: float) -> bool:
     """Whether Strata's smallest model is for this computer: llama.cpp's CUDA build (an NVIDIA card with its
     driver - Strata's engine AFO fetches is CUDA's), 8 GB on the card, its experts in the RAM less AFO's room."""
-    return (build.startswith("cuda") and vram_total_gib >= CARD_MIN_GIB
-            and ram_total_gib - RAM_ROOM_GIB >= SMALLEST["ram_gib"])  # fmt: skip
+    return verdict(SMALLEST, build, vram_total_gib, ram_total_gib) == "fits"
 
 
 def persons_own(environ: dict[str, str] | None = None) -> Path | None:
@@ -122,32 +141,61 @@ def run(base: Path, args: list[str], *, cancel: threading.Event | None = None,
         timeout: float = RUN_TIMEOUT_S) -> str:  # fmt: skip
     """`strata <args>` of AFO's copy (blocking), in a Windows job: what it said. Cancelled or out of time - the job is
     killed with all Strata started; a non-zero end - StrataError with its last words."""
+    return _started(base, [str(terminal(base) / "strata.py"), *args], cancel=cancel, timeout=timeout)
+
+
+def _started(base: Path, argv: list[str], *, cancel: threading.Event | None, timeout: float,
+             on_line: Callable[[str], None] | None = None) -> str:  # fmt: skip
+    """Strata's Python with `argv`: what it said, each line given to `on_line` as it comes. Its words go to a file,
+    read through a handle of its own - one shared with the program would move its place in the file."""
     cancel = cancel or threading.Event()
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     began = time.monotonic()
-    with tempfile.TemporaryFile() as said, winjob.Job(JOB_MEMORY) as job:
-        try:
-            process = subprocess.Popen([*command(base), *args], stdout=said,
-                                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=str(terminal(base)),
-                                       env=environment(base), creationflags=flags)  # fmt: skip
-        except OSError as exc:
-            raise StrataError(tr("Strata не запустилась: {error}", error=exc)) from exc
-        try:
-            job.add(process)
-            while process.poll() is None:
-                if cancel.is_set() or time.monotonic() - began > timeout:
+    runs = data(base) / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=runs, suffix=".log", delete=False) as said:
+        log_file = Path(said.name)
+    lines: list[str] = []
+    try:
+        with open(log_file, "wb") as out, open(log_file, "rb") as seen, winjob.Job(JOB_MEMORY) as job:
+            try:
+                process = subprocess.Popen([command(base)[0], *argv], stdout=out, stderr=subprocess.STDOUT,
+                                           stdin=subprocess.DEVNULL, cwd=str(terminal(base)), env=environment(base),
+                                           creationflags=flags)  # fmt: skip
+            except OSError as exc:
+                raise StrataError(tr("Strata не запустилась: {error}", error=exc)) from exc
+            rest = b""
+
+            def read() -> None:
+                nonlocal rest
+                rest += seen.read()
+                *whole, rest = rest.split(b"\n")
+                for line in whole:
+                    lines.append(line.decode("utf-8", "replace").rstrip("\r"))
+                    if on_line is not None:
+                        on_line(lines[-1])
+
+            try:
+                job.add(process)
+                while process.poll() is None:
+                    if cancel.is_set() or time.monotonic() - began > timeout:
+                        job.kill()
+                        process.wait(timeout=30)
+                        if cancel.is_set():
+                            raise StrataError(tr("остановлено"))
+                        raise StrataError(tr("Strata не закончила за {minutes} мин", minutes=round(timeout / 60)))
+                    read()
+                    time.sleep(0.2)
+            finally:
+                if process.poll() is None:
                     job.kill()
                     process.wait(timeout=30)
-                    if cancel.is_set():
-                        raise StrataError(tr("остановлено"))
-                    raise StrataError(tr("Strata не закончила за {minutes} мин", minutes=round(timeout / 60)))
-                time.sleep(0.1)
-        finally:
-            if process.poll() is None:
-                job.kill()
-                process.wait(timeout=30)
-        said.seek(0)
-        text = said.read().decode("utf-8", "replace")
+            read()
+            if rest:
+                lines.append(rest.decode("utf-8", "replace"))
+    finally:
+        log_file.unlink(missing_ok=True)
+    text = "\n".join(lines)
     if process.returncode != 0:
         raise StrataError(tr("Strata ответила ошибкой ({code}): {said}", code=process.returncode,
                              said=" ".join(text.split())[-400:]))  # fmt: skip
@@ -220,6 +268,84 @@ def install(assets: dict[str, dict[str, Any]], base: Path, *, report: Callable[[
     (base / READY).write_text(json.dumps(ready), encoding="utf-8")
     engines.remove_tree(downloads)
     return ready
+
+
+def verdict(key: str, build: str, vram_total_gib: float, ram_total_gib: float) -> str:
+    """(45.2в) A model of MODELS on this computer: «fits» - its experts in the RAM less AFO's room; «slower» -
+    Strata still runs it, reading the rest from the disk (its own word: «may run slower», never a refusal - 45.0);
+    «no» - not a card Strata's engine is for (llama.cpp's CUDA build, CARD_MIN_GIB)."""
+    if not build.startswith("cuda") or vram_total_gib < CARD_MIN_GIB:
+        return "no"
+    return "fits" if ram_total_gib - RAM_ROOM_GIB >= MODELS[key]["ram_gib"] else "slower"
+
+
+def computer() -> tuple[str, float, float]:
+    """(45.2в) This computer as `verdict` reads it: llama.cpp's build for its cards, the NVIDIA card's memory and the
+    RAM, GiB."""
+    cards = hardware.adapters()
+    build = hardware.build_for(cards, hardware.nvidia_driver())["build"]
+    vram = max((c.get("vram_gib") or 0.0 for c in cards if c.get("vendor") == "nvidia"), default=0.0)
+    return build, vram, (memory_sample() or {}).get("ram_total_gib") or 0.0
+
+
+def prepare(base: Path, key: str, data_dir: Path, *, report: Callable[[str, float | None, str], None],
+            cancel: threading.Event, context: int = CONTEXT) -> dict[str, str]:  # fmt: skip
+    """(45.2в) A model of MODELS made ready by Strata without starting it (blocking, strata_prepare.py on its
+    Python): its files downloaded by Strata into `data_dir` (`models`, `mtp`, `packs` there), the draft layer, the
+    pack, the run config - each step's name, share (0-100 or None) and words to `report` as they come. Not tuned:
+    Strata's tuning loads the model, past the card's queue. {profile, config}: what `serve --profile` takes."""
+    model = MODELS[key]
+    script = Path(__file__).with_name("strata_prepare.py")
+    args = ["-I", "-X", "utf8", str(script), str(terminal(base)), "--model", model["model"], "--family",
+            model["family"], "--data-dir", str(data_dir), "--context", str(context), "--vision", "off", "--access",
+            "local", "--port", "18080", "--tune", "skip"]  # fmt: skip
+    prepared: dict[str, str] = {}
+    said: list[str] = []
+
+    def line(text: str) -> None:
+        if not text.startswith("{"):
+            return
+        try:
+            event = json.loads(text)
+        except ValueError:
+            return
+        if "prepared" in event:
+            prepared.update(event["prepared"])
+        elif event.get("text"):
+            said.append(event["text"])
+            report(str(event.get("stage") or ""), event.get("pct"), event["text"])
+
+    try:
+        _started(base, args, cancel=cancel, timeout=PREPARE_TIMEOUT_S, on_line=line)
+    except StrataError as exc:
+        raise StrataError(tr("Strata не подготовила {model}: {said}", model=model["name"],
+                             said=said[-1] if said else exc)) from exc  # fmt: skip
+    if not prepared.get("config"):
+        raise StrataError(tr("Strata не подготовила {model}: {said}", model=model["name"],
+                             said=said[-1] if said else tr("нет ответа")))  # fmt: skip
+    return prepared
+
+
+def serve_env(base: Path) -> list[str]:
+    """(45.2в) What llama-swap gives a model of AFO's Strata (its `env:`): every folder of Strata's own and a PATH
+    without the person's Strata - `serve` heals a strata.ps1 on PATH too (45.0) - and no Python of the hub's."""
+    own = environment(base)
+    keys = ("USERPROFILE", "HOME", "LOCALAPPDATA", "APPDATA", *sorted(k for k in own if k.startswith("STRATA_")),
+            "PYTHONUTF8", "PYTHONNOUSERSITE")  # fmt: skip
+    path = next((v for k, v in own.items() if k.upper() == "PATH"), "")
+    return [f"{k}={own[k]}" for k in keys] + [f"PATH={path}", "PYTHONHOME=", "PYTHONPATH=", "VIRTUAL_ENV="]
+
+
+def forget(base: Path, prepared: dict[str, str]) -> None:
+    """(45.2в) A removed model's run config, its engine's log and its profile out of AFO's Strata; its files went
+    with the install's folder. Only what lies inside `base`."""
+    config = Path(prepared.get("config") or "")
+    places = [config, config.with_name(config.stem + ".engine.log")] if config.name else []
+    if prepared.get("profile"):
+        places.append(data(base) / "profiles" / f"{prepared['profile']}.json")
+    for place in places:
+        if base.resolve() in place.resolve().parents:
+            place.unlink(missing_ok=True)
 
 
 def _download(files: list[dict[str, Any]], downloads: Path, base_bytes: int, report: Callable[..., None],

@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +20,9 @@ import pytest
 
 from common import hardware
 from hub import engines, resources, strata
+from hub import llama_config as lc
+from tests.test_llama_config import CONFIG, FakeLlamaSwap
+from tests.test_model_install import fake_hub, hub, wait_for  # noqa: F401 - the installer's hub fixture
 
 ENGINE = "strata-engine-0.1.64-windows-x86_64-cuda-cuda13.tar.gz"
 ENGINE_BYTES = b"engine " * 1000
@@ -62,6 +66,104 @@ else:
 """
 
 
+# (45.2в) the stand-in's `strata launch`, shaped as Strata 0.1.64's own modules where hub/strata_prepare.py takes hold
+# of them: cli.main -> launch.cmd.launch, its words through cmd._printer, the steps in launch.runner.Runner.run. The
+# model's file comes in pieces into <data-dir>/models (STAND_IN_PACE seconds between them) and goes on where it
+# stopped; started, it would leave `started` - the model loaded
+STAND_IN_CLI = r"""
+import sys
+from strata_cli.launch import cmd
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "launch":
+        return cmd.launch(argv[1:])
+    print("no such command", argv)
+    return 2
+"""
+STAND_IN_CMD = r"""
+import argparse
+from strata_cli.launch import runner
+
+def _printer(quiet=False):
+    def emit(event):
+        print(f"[{event.stage}] {event.text}", flush=True)
+    return emit
+
+def launch(argv):
+    parser = argparse.ArgumentParser(prog="strata launch")
+    for flag in ("--model", "--family", "--data-dir", "--context", "--vision", "--access", "--port", "--tune"):
+        parser.add_argument(flag)
+    parser.add_argument("--no-tui", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        runner.Runner(args, _printer(False)).run()
+    except SystemExit as exc:
+        return int(exc.code or 1)
+    return 0
+"""
+STAND_IN_RUNNER = r"""
+import json, os, time
+from dataclasses import dataclass
+from pathlib import Path
+
+SIZE = 1_000_000
+
+@dataclass
+class Event:
+    stage: str
+    text: str
+    pct: float | None = None
+    level: str = "info"
+
+class Runner:
+    def __init__(self, args, emit_cb):
+        self.a, self.emit_cb = args, emit_cb
+        self.name = f"{args.model.lower()}-{int(args.context) // 1024}k"
+        self.profile, self.config_path = "launch-" + self.name, None
+
+    def emit(self, stage, text, pct=None, level="info"):
+        self.emit_cb(Event(stage, text, pct, level))
+
+    def run(self, *, start=True):
+        data = Path(self.a.data_dir)
+        names = ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "STRATA_DATA_DIR", "PYTHONPATH", "PATH")
+        seen = Path(os.environ["STRATA_DATA_DIR"]) / "prepared-in.json"
+        seen.write_text(json.dumps({"args": vars(self.a), "env": {k: os.environ.get(k, "") for k in names}}))
+        self.emit("engine", "Engine 0.1.64 (cuda) is installed.", 100)
+        if os.environ.get("STAND_IN_FAIL"):
+            self.emit("model", "Hugging Face did not answer.", None, level="error")
+            raise SystemExit(2)
+        model = data / "models" / f"{self.a.family}{self.a.model}" / "model.gguf"
+        model.parent.mkdir(parents=True, exist_ok=True)
+        have = model.stat().st_size // 100_000 * 100_000 if model.exists() else 0  # whole pieces only
+        with open(model, "ab") as out:
+            out.truncate(have)
+            while have < SIZE:
+                out.write(b"x" * 100_000)
+                out.flush()
+                have += 100_000
+                self.emit("model", f"Downloading {have / 1e9:.4f} of {SIZE / 1e9:.4f} GB", 100.0 * have / SIZE)
+                time.sleep(float(os.environ.get("STAND_IN_PACE") or 0))
+        (data / "mtp" / "rt").mkdir(parents=True, exist_ok=True)
+        (data / "mtp" / "rt" / "experts.bin").write_bytes(b"mtp")
+        self.emit("model", "Preparing the model files for this graphics card…", 0)
+        launch = Path(os.environ["LOCALAPPDATA"]) / "Strata" / "launch"
+        launch.mkdir(parents=True, exist_ok=True)
+        self.config_path = launch / f"{self.name}.json"
+        self.config_path.write_text(json.dumps({"model": str(model), "context": int(self.a.context)}))
+        (launch / f"{self.name}.engine.log").write_text("engine")
+        profiles = Path(os.environ["STRATA_PROFILE_DIR"])
+        profiles.mkdir(parents=True, exist_ok=True)
+        (profiles / f"{self.profile}.json").write_text("{}")
+        self.emit("config", "Settings are saved.", 100)
+        if start:
+            (data / "started").write_text("the model was loaded")
+        return 0
+"""
+
+
 def control_zip() -> bytes:
     """The control package as the release has it - rooted at the bundle - with a Python of its own: a copy of this
     test's venv launcher, its pyvenv.cfg beside the folder (the real one carries Python 3.12)."""
@@ -69,6 +171,11 @@ def control_zip() -> bytes:
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as zf:
         zf.writestr("strata.py", STAND_IN)
+        zf.writestr("strata_cli/__init__.py", "")
+        zf.writestr("strata_cli/cli.py", STAND_IN_CLI)
+        zf.writestr("strata_cli/launch/__init__.py", "")
+        zf.writestr("strata_cli/launch/cmd.py", STAND_IN_CMD)
+        zf.writestr("strata_cli/launch/runner.py", STAND_IN_RUNNER)
         zf.writestr("bin/strata.cmd", "@echo off\r\n")
         zf.writestr("BUNDLE.json", json.dumps({"component": "strata-control", "version": strata.CONTROL_VERSION}))
         zf.write(Path(sys.executable), "python/python.exe")
@@ -196,7 +303,7 @@ def a_computer(monkeypatch, tmp_path, *, vendor="nvidia", vram=16.0, ram=63.4, c
                                                         "driver": "32.0"}])  # fmt: skip
     driver = {"version": "621.14", "cuda": 13050, "compute": [12, 0]} if cuda and vendor == "nvidia" else None
     monkeypatch.setattr(hardware, "nvidia_driver", lambda: driver)
-    monkeypatch.setattr(resources, "memory_sample", lambda: {"ram_total_gib": ram})
+    monkeypatch.setattr(strata, "memory_sample", lambda: {"ram_total_gib": ram})
 
 
 def scanner(enabled=True) -> resources.Resources:
@@ -237,3 +344,143 @@ def test_where_it_does_not_fit_or_is_the_persons_strata_is_not_fetched(github, m
     (terminal / "strata.py").unlink()
     assert asyncio.run(scanner(enabled=False).strata_check())["status"] == "off"
     assert github.asked == [] and not strata.home().exists()
+
+
+CODER = "flash-next-coder-iq1_m"
+
+
+@pytest.fixture
+def small_models(monkeypatch):
+    """Strata's models as the stand-in downloads them - 1 MB, nothing beside: the test's disk has no 66 GB."""
+    for key, entry in list(strata.MODELS.items()):
+        monkeypatch.setitem(strata.MODELS, key, {**entry, "download_gb": 0.001})
+    monkeypatch.setattr(strata, "EXTRA_GB", 0.0)
+
+
+def put_in() -> None:
+    """AFO's own Strata, put in from the stand-in GitHub as the scanner does it."""
+    strata.install(assets(), strata.home(), report=lambda n, total: None, cancel=threading.Event())
+
+
+def job_of(client, job_id: str) -> dict:
+    return next(j for j in client.get("/v1/install/jobs").json()["jobs"] if j["id"] == job_id)
+
+
+def downloading(client, job_id: str, timeout: float = 30.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = job_of(client, job_id)
+        if found["status"] == "downloading" and found["percent"] > 0:
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"{job_id}: {found['status']} ({found['error']})")
+
+
+def test_a_strata_model_installed_tried_and_removed(github, hub, persons_strata, small_models, monkeypatch,  # noqa: F811
+                                                    tmp_path):  # fmt: skip
+    """45.2в: a model of AFO's Strata. Strata downloads it into the install's folder and prepares it without starting
+    it (its own Runner.run(start=False): the card free meanwhile, nothing tuned), in AFO's folders and with no Strata
+    of the person's on PATH; its block is `serve --profile` of that run config with the same folders in its `env`;
+    one trial question. Removed: its folder, run config and profile go, Strata stays. Not for an AMD card."""
+    a_computer(monkeypatch, tmp_path)
+    assert not hub.get("/v1/install/strata").json()["ready"]
+    refused = hub.post("/v1/install/strata", json={"id": CODER})
+    assert refused.status_code == 409 and "Strata ещё не установлена" in refused.json()["detail"]
+    put_in()
+    listed = hub.get("/v1/install/strata").json()
+    assert listed["ready"] and [(m["id"], m["verdict"]) for m in listed["models"]] == [
+        (CODER, "fits"), ("flash-next-q2_0", "fits"), ("flash-next-iq2_xs", "fits"), ("flash-next-iq3_xxs", "fits"),
+        ("flash-next-iq3_s", "slower")]  # 63.4 GB less 3: IQ3_S's experts want 62  # fmt: skip
+
+    job = hub.post("/v1/install/strata", json={"id": CODER, "drive": "T"}).json()["job"]
+    assert job["status"] == "queued" and job["plan"]["engine"] == "strata" and job["total_bytes"] == 1_000_000
+    done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert done["status"] == "done", done["error"]
+    assert done["percent"] == 100.0 and done["trial"]["seconds"] is not None
+    folder = hub.tmp / "T" / "AFO" / "models" / "strata" / CODER
+    assert (folder / "models" / "coderIQ1_M" / "model.gguf").stat().st_size == 1_000_000
+    assert (folder / "mtp" / "rt" / "experts.bin").is_file() and not (folder / "started").exists()
+    base = strata.home()
+    prepared = json.loads((strata.data(base) / "prepared-in.json").read_text())
+    assert (prepared["args"]["data_dir"], prepared["args"]["tune"], prepared["args"]["context"]) == (
+        str(folder), "skip", "65536")  # fmt: skip
+    env = prepared["env"]
+    assert all(Path(env[k]).is_relative_to(base) for k in ("LOCALAPPDATA", "APPDATA", "USERPROFILE",
+                                                            "STRATA_DATA_DIR"))  # fmt: skip
+    assert str(persons_strata) not in env["PATH"] and not env["PYTHONPATH"]
+    assert (persons_strata / "strata.ps1").is_file()
+    config = Path(done["plan"]["config"])
+    assert config == base / "home" / "Local" / "Strata" / "launch" / "iq1_m-64k.json" and config.is_file()
+
+    text = hub.config.read_text(encoding="utf-8")
+    model_id = done["model_id"]
+    view = lc.model_view(text, model_id)
+    assert (view["engine"], view["editable"], view["ttl"], view["profile"]) == ("strata", False, 900,
+                                                                               config.as_posix())  # fmt: skip
+    start, end = lc.model_blocks(text)[model_id]
+    block = "\n".join(text.splitlines()[start:end])
+    python, script = (Path(p).as_posix() for p in strata.command(base))
+    assert f'"{python}" "{script}" serve' in block and "--host 127.0.0.1 --port ${PORT}" in block
+    assert f"      - 'LOCALAPPDATA={base / 'home' / 'Local'}'" in block and str(persons_strata) not in block
+    assert [line[9:-1] for line in block.splitlines() if line.startswith("      - '")] == strata.serve_env(base)
+    assert "checkEndpoint: /health" in block and f'localchat_install: "{job["id"]}"' in block
+    assert FakeLlamaSwap.asked[-1]["model"] == model_id
+    assert {m["id"]: m for m in hub.get("/v1/models").json()["models"]}[f"llama-swap/{model_id}"]["enabled"]
+    again = hub.post("/v1/install/strata", json={"id": CODER})
+    assert again.status_code == 409 and "уже установлена" in again.json()["detail"]
+
+    gone = hub.delete(f"/v1/install/models/{model_id}").json()["job"]
+    assert gone["status"] == "removed" and not folder.exists() and not folder.parent.exists()
+    assert not config.exists() and not (strata.data(base) / "profiles" / "launch-iq1_m-64k.json").exists()
+    assert hub.config.read_text(encoding="utf-8") == CONFIG and strata.installed(base)
+    a_computer(monkeypatch, tmp_path, vendor="amd")
+    refused = hub.post("/v1/install/strata", json={"id": CODER})
+    assert refused.status_code == 409 and "NVIDIA" in refused.json()["detail"]
+
+
+def test_a_strata_install_paused_resumed_cancelled_and_failing_in_words(github, hub, small_models,  # noqa: F811
+                                                                       monkeypatch, tmp_path):  # fmt: skip
+    """45.2в: «Приостановить» stops Strata with every process it started - its file grows no more - and «Продолжить»
+    goes on where its download stopped; «Отменить» takes the folder away; Strata's own last words say why it failed,
+    and nothing is written into the config."""
+    a_computer(monkeypatch, tmp_path)
+    put_in()
+    monkeypatch.setenv("STAND_IN_PACE", "0.3")
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    downloading(hub, job["id"])
+    assert hub.post(f"/v1/install/jobs/{job['id']}/pause").status_code == 200
+    wait_for(hub, job["id"], "paused")
+    folder = hub.tmp / "localchat-model" / "strata" / CODER
+    model = folder / "models" / "coderIQ1_M" / "model.gguf"
+    size = model.stat().st_size
+    time.sleep(1.0)
+    assert model.stat().st_size == size < 1_000_000  # stopped, not left writing
+    monkeypatch.setenv("STAND_IN_PACE", "0")
+    hub.post(f"/v1/install/jobs/{job['id']}/resume")
+    done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert done["status"] == "done", done["error"]
+    assert model.stat().st_size == 1_000_000
+    hub.delete(f"/v1/install/models/{done['model_id']}")
+
+    monkeypatch.setenv("STAND_IN_PACE", "0.3")
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    downloading(hub, job["id"])
+    hub.post(f"/v1/install/jobs/{job['id']}/cancel")
+    wait_for(hub, job["id"], "cancelled")
+    assert not folder.exists()
+
+    monkeypatch.setenv("STAND_IN_FAIL", "1")
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    failed = wait_for(hub, job["id"], "failed", "done", timeout=60.0)
+    assert failed["status"] == "failed" and "Strata не подготовила" in failed["error"]
+    assert "Hugging Face did not answer." in failed["error"] and hub.config.read_text(encoding="utf-8") == CONFIG
+
+
+def test_a_strata_model_bigger_than_the_disk_is_refused_before_anything_starts(github, hub, monkeypatch,  # noqa: F811
+                                                                                tmp_path):  # fmt: skip
+    a_computer(monkeypatch, tmp_path)
+    put_in()
+    monkeypatch.setitem(strata.MODELS, CODER, {**strata.MODELS[CODER], "download_gb": 1e9})
+    refused = hub.post("/v1/install/strata", json={"id": CODER})
+    assert refused.status_code == 507 and "не хватает места" in refused.json()["detail"]
+    assert hub.get("/v1/install/jobs").json()["jobs"] == []

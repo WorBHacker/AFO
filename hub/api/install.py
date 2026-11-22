@@ -13,6 +13,7 @@ POST /trial/stop takes back those not begun.
 GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
 (the picture engine comes with the first); GET /pictures/repo/<a>/<b> - a found model that draws, of a family AFO
 knows (47.5): its variants judged with the family's encoders and VAE.
+GET /strata - AFO's own Strata and the models it installs through it (45.2в); POST /strata starts one's install.
 """
 
 from __future__ import annotations
@@ -175,6 +176,26 @@ async def install_pictures(request: Request, body: Pictures, client: Annotated[C
     try:
         return {"job": await _installer(request).install_pictures(body.model_dump(), client)}
     except (hf.HubError, hf.NotForWork, mi.InstallError, llama_config.ConfigError) as exc:
+        raise _refusal(exc) from exc
+
+
+@router.get("/strata")
+async def strata_models(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """(45.2в) AFO's own Strata and its models, judged for this computer."""
+    return await _installer(request).strata_catalog()
+
+
+class Strata(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    drive: str = Field(default="", max_length=3)
+    folder: str = Field(default="", max_length=400)
+
+
+@router.post("/strata")
+async def install_strata(request: Request, body: Strata, client: Annotated[Client, Depends(require_app)]) -> dict:
+    try:
+        return {"job": await _installer(request).install_strata(body.model_dump(), client)}
+    except (mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
 
 
