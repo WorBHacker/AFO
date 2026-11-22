@@ -9886,6 +9886,62 @@ def test_a_number_being_typed_stays_while_the_tuning_measures(qapp):
         quick.close()
 
 
+def test_a_number_being_typed_stays_while_the_draft_downloads(qapp):
+    """«Стабилизация», portion 2, step 5 (found at 0.1.15 step 4): each word of the draft model's download - «Качаю
+    черновую модель …: N из M» - redrew the whole models sheet, as the tuning's measurements did before step 4: a
+    number being typed in a launch field went back to the saved one. Now the draft's download redraws only its line
+    and the buttons it holds back, in the window drawn."""
+    from PySide6.QtCore import QEvent, QMetaObject, QObject
+    from PySide6.QtGui import QKeyEvent
+
+    from app.ui.main import QuickApp
+
+    def key(item, code, text="", modifiers=Qt.KeyboardModifier.NoModifier):
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(item, QKeyEvent(kind, code, modifiers, text))
+
+    def drawn():
+        for _ in range(10):
+            QApplication.processEvents()
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        setup = app.model_setup
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("editable") and sheet.property("opened"))
+        drawn()
+        field = quick.window.findChild(QObject, "launch_context")
+        line = quick.window.findChild(QObject, "specText")
+        QMetaObject.invokeMethod(field, "forceActiveFocus")
+        key(field, Qt.Key.Key_A, modifiers=Qt.KeyboardModifier.ControlModifier)
+        for digit in "65536":  # typed, not finished: the field's own until Enter or it loses focus
+            key(field, getattr(Qt.Key, f"Key_{digit}"), digit)
+        assert field.property("text") == "65536" and setup.launchDraft["context"] == "32768"
+        coming = {"model_id": "big", "name": "Draft-0.6B", "done": 0, "total": 300 * 1024**2}
+        for done in (10, 120):  # «Ускорить»: the draft on its way
+            send(app, "install.draft", {"drafting": {**coming, "done": done * 1024**2}})
+            drawn()
+            assert field.property("text") == "65536", "the number being typed taken back by the draft's download"
+            assert line.property("text").startswith("Качаю черновую модель Draft-0.6B:"), line.property("text")
+            assert setup.speedBusy
+        send(app, "install.draft", {"drafting": {}})  # downloaded
+        drawn()
+        assert field.property("text") == "65536" and not setup.speedBusy
+        key(field, Qt.Key.Key_Return, "\r")  # finished: into the draft
+        assert setup.launchDraft["context"] == "65536"
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_speeding_up_a_model_that_does_not_fit_asks_first(app):
     """0.1.15 step 7: «Ускорить» for a model not whole on the graphics card downloaded a draft at once - hundreds of
     megabytes for a speed-up that most likely is none: the draft needs room on the card too. Now it asks first, in the

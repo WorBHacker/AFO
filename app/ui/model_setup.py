@@ -653,11 +653,13 @@ class ModelSetup(QObject):
     # a number being typed in a launch field went back to the saved one
     tuneChanged = Signal()
     pendingChanged = Signal()  # an action asked of the hub (0.1.15 step 8б): its button and its word alone, as above
+    draftingChanged = Signal()  # the draft on its way (portion 2, step 5): its line and «Ускорить» alone, as above
 
     def __init__(self, app: Controller):
         super().__init__(app)
         self.app = app
         self.changed.connect(self.tuneChanged)
+        self.changed.connect(self.draftingChanged)
         self._model = GENERAL
         self._info: dict[str, Any] = {}
         self._draft: dict[str, Any] = dict(BLANK)
@@ -1114,11 +1116,11 @@ class ModelSetup(QObject):
 
     # --- guessing ahead (42.6) ---
 
-    @Property(str, notify=changed)
+    @Property(str, notify=draftingChanged)
     def specText(self) -> str:
         return spec_text(self._tune, self._tune_id(), self._launch, self._drafting)[0]
 
-    @Property(str, notify=changed)
+    @Property(str, notify=draftingChanged)
     def specTone(self) -> str:
         return spec_text(self._tune, self._tune_id(), self._launch, self._drafting)[1]
 
@@ -1135,7 +1137,7 @@ class ModelSetup(QObject):
         """The model's command guesses ahead: «Снять ускорение» shows."""
         return bool((self._launch.get("spec") or {}).get("type"))
 
-    @Property(bool, notify=changed)
+    @Property(bool, notify=draftingChanged)
     def speedBusy(self) -> bool:
         """Its draft model looked for (0.1.15 step 6: a second click starts nothing) or on its way."""
         mine = self._drafting.get("model_id") == self._tune_id()
@@ -1143,7 +1145,7 @@ class ModelSetup(QObject):
 
     def _set_drafting(self, drafting: dict[str, Any] | None) -> None:
         self._drafting = drafting or {}
-        self.changed.emit()
+        self.draftingChanged.emit()  # not `changed` (portion 2, step 5): a number being typed stays
 
     def _load_drafting(self) -> None:
         if self.app.client is not None:
