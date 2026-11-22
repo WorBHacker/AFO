@@ -92,7 +92,8 @@ def _printer(quiet=False):
 
 def launch(argv):
     parser = argparse.ArgumentParser(prog="strata launch")
-    for flag in ("--model", "--family", "--data-dir", "--context", "--vision", "--access", "--port", "--tune"):
+    for flag in ("--model", "--family", "--data-dir", "--context", "--vision", "--access", "--port", "--tune", "--kv",
+                 "--parallel", "--drafting"):
         parser.add_argument(flag)
     parser.add_argument("--no-tui", action="store_true")
     parser.add_argument("--yes", action="store_true")
@@ -131,6 +132,7 @@ class Runner:
         names = ("LOCALAPPDATA", "APPDATA", "USERPROFILE", "STRATA_DATA_DIR", "PYTHONPATH", "PATH")
         seen = Path(os.environ["STRATA_DATA_DIR"]) / "prepared-in.json"
         seen.write_text(json.dumps({"args": vars(self.a), "env": {k: os.environ.get(k, "") for k in names}}))
+        time.sleep(float(os.environ.get("STAND_IN_WAIT") or 0))
         self.emit("engine", "Engine 0.1.64 (cuda) is installed.", 100)
         if os.environ.get("STAND_IN_FAIL"):
             self.emit("model", "Hugging Face did not answer.", None, level="error")
@@ -152,7 +154,8 @@ class Runner:
         launch = Path(os.environ["LOCALAPPDATA"]) / "Strata" / "launch"
         launch.mkdir(parents=True, exist_ok=True)
         self.config_path = launch / f"{self.name}.json"
-        self.config_path.write_text(json.dumps({"model": str(model), "context": int(self.a.context)}))
+        chosen = {k: getattr(self.a, k) for k in ("kv", "parallel", "drafting") if getattr(self.a, k)}
+        self.config_path.write_text(json.dumps({"model": str(model), "context": int(self.a.context), **chosen}))
         (launch / f"{self.name}.engine.log").write_text("engine")
         profiles = Path(os.environ["STRATA_PROFILE_DIR"])
         profiles.mkdir(parents=True, exist_ok=True)
@@ -484,3 +487,57 @@ def test_a_strata_model_bigger_than_the_disk_is_refused_before_anything_starts(g
     refused = hub.post("/v1/install/strata", json={"id": CODER})
     assert refused.status_code == 507 and "не хватает места" in refused.json()["detail"]
     assert hub.get("/v1/install/jobs").json()["jobs"] == []
+
+
+def test_a_strata_models_settings_are_prepared_again_and_the_earlier_come_back_if_they_do_not_start(
+        github, hub, small_models, monkeypatch, tmp_path):  # noqa: F811  # fmt: skip
+    """45.1в: an installed model of AFO's Strata with other KV, requests at once, context or drafter - Strata prepares
+    its run config again with them (not the command's flags) and one trial question follows; another context is a
+    run config of another name, the earlier one goes. Ones that do not start: the run config as it was, the block
+    with it, said in words. Cancelling meanwhile would throw the model away - refused; a value Strata has not - 422."""
+    a_computer(monkeypatch, tmp_path)
+    put_in()
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    model_id = wait_for(hub, job["id"], "done", "failed", timeout=60.0)["model_id"]
+    base = strata.home()
+    launch = base / "home" / "Local" / "Strata" / "launch"
+
+    def shown() -> dict:
+        return lc.model_view(hub.config.read_text(encoding="utf-8"), model_id)
+
+    assert shown()["strata"] == {"context": 65536, "kv": "int8", "parallel": 0, "drafting": "auto"}
+    monkeypatch.setenv("STAND_IN_WAIT", "1.5")
+    changing = hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"kv": "q4_0", "parallel": 2}})
+    assert changing.status_code == 200 and changing.json()["job"]["status"] == "queued"
+    refused = hub.post(f"/v1/install/jobs/{job['id']}/cancel")
+    assert refused.status_code == 409 and "не отменить" in refused.json()["detail"]
+    monkeypatch.setenv("STAND_IN_WAIT", "0")
+    done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert done["status"] == "done" and not done["error"] and "was" not in done["plan"]
+    args = json.loads((strata.data(base) / "prepared-in.json").read_text())["args"]
+    assert (args["kv"], args["parallel"], args["drafting"]) == ("q4_0", "2", None)
+    assert json.loads((launch / "iq1_m-64k.json").read_text())["kv"] == "q4_0"
+    assert shown()["strata"] == {"context": 65536, "kv": "q4_0", "parallel": 2, "drafting": "auto"}
+    assert (hub.tmp / "localchat-model" / "strata" / CODER / "models").is_dir()  # its files stayed
+
+    done = hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"context": 131072}}).json()["job"]
+    done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert done["status"] == "done" and Path(done["plan"]["config"]) == launch / "iq1_m-128k.json"
+    assert not (launch / "iq1_m-64k.json").exists() and shown()["profile"] == (launch / "iq1_m-128k.json").as_posix()
+    assert json.loads((launch / "iq1_m-128k.json").read_text())["kv"] == "q4_0"  # the earlier choices kept
+
+    FakeLlamaSwap.fail = True  # the next settings do not start
+    hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"drafting": "off", "context": 262144}})
+    time.sleep(0.2)
+    back = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert back["status"] == "done" and "новые настройки Strata не запустились" in back["error"]
+    assert "drafting" not in back["plan"] and back["plan"]["context"] == 131072
+    config = json.loads((launch / "iq1_m-128k.json").read_text())
+    assert {k: config.get(k) for k in ("context", "kv", "parallel", "drafting")} == {
+        "context": 131072, "kv": "q4_0", "parallel": "2", "drafting": None}  # as it was  # fmt: skip
+    assert not (launch / "iq1_m-256k.json").exists()
+    assert shown()["strata"] == {"context": 131072, "kv": "q4_0", "parallel": 2, "drafting": "auto"}
+    FakeLlamaSwap.fail = False
+
+    assert hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"kv": "q9"}}).status_code == 422
+    assert hub.put("/v1/install/strata/big", json={"changes": {"kv": "q4_0"}}).status_code == 404

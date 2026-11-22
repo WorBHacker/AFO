@@ -14,6 +14,7 @@ GET /pictures - the curated picture models (D55, 29.3) with how each runs here; 
 (the picture engine comes with the first); GET /pictures/repo/<a>/<b> - a found model that draws, of a family AFO
 knows (47.5): its variants judged with the family's encoders and VAE.
 GET /strata - AFO's own Strata and the models it installs through it (45.2в); POST /strata starts one's install.
+PUT /strata/<id> - an installed one's Strata settings (45.1в): prepared again and tried.
 """
 
 from __future__ import annotations
@@ -196,6 +197,20 @@ async def install_strata(request: Request, body: Strata, client: Annotated[Clien
     try:
         return {"job": await _installer(request).install_strata(body.model_dump(), client)}
     except (mi.InstallError, llama_config.ConfigError) as exc:
+        raise _refusal(exc) from exc
+
+
+class StrataSettings(BaseModel):
+    changes: dict[str, Any]
+
+
+@router.put("/strata/{model_id}")
+async def strata_settings(request: Request, model_id: str, body: StrataSettings,
+                          client: Annotated[Client, Depends(require_app)]) -> dict:  # fmt: skip
+    """(45.1в) Other settings of a model AFO installed through its Strata: prepared again and tried as an install."""
+    try:
+        return {"job": await _installer(request).strata_settings(model_id, body.changes, client)}
+    except mi.InstallError as exc:
         raise _refusal(exc) from exc
 
 

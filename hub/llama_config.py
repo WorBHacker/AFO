@@ -460,6 +460,15 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     if engine == runtimes.STRATA:
         view["profile"] = value("model") or next((_unquote(tokens[i + 1]) for i, t in enumerate(tokens)
                                                   if t == "--profile" and i + 1 < len(tokens)), "")  # fmt: skip
+        meta = {m.group(1): _unquote(m.group(2)) for line in block
+                if (m := re.match(r"^\s{6}(\w+):\s*(.+?)\s*$", line))}  # fmt: skip
+        if meta.get("localchat_install"):  # 45.1в: AFO's own Strata installed it - the window changes these
+            view["strata"] = {
+                "context": int(meta.get("context") or 0),
+                "kv": meta.get("kv") or "int8",
+                "parallel": int(meta.get("parallel") or 0),
+                "drafting": meta.get("drafting") or "auto",
+            }
     if runtime.flags:  # llama.cpp's flags (FLAGS)
         layers = value("gpu_layers")
         fit = value("fit")

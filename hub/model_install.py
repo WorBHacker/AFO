@@ -1944,6 +1944,8 @@ class Installer:
         found = await self._get(job_id)
         if found["status"] in IN_CONFIG:
             raise InstallError(tr("модель уже установлена — её можно удалить"))
+        if found["plan"].get("was"):  # 45.1в: an installed model's files - only its settings change
+            raise InstallError(tr("у модели меняются настройки Strata — её можно приостановить, не отменить"))
         if found["status"] in ("cancelled", "removed"):
             return found
         if job_id in self._cancel:
@@ -1965,7 +1967,7 @@ class Installer:
     async def forget(self, job_id: str) -> None:
         """An install that did not finish off the list - with its files."""
         found = await self._get(job_id)
-        if found["status"] in (*LIVE, *IN_CONFIG):
+        if found["status"] in (*LIVE, *IN_CONFIG) or found["plan"].get("was"):  # 45.1в: installed, its settings change
             raise InstallError(tr("эта установка ещё идёт или модель установлена"))
         await self._throw_away(found)
         await self._db.acall(lambda conn: conn.execute("DELETE FROM model_installs WHERE id = ?", (job_id,)))
@@ -2055,9 +2057,15 @@ class Installer:
                 await trial(found, True)
                 return
             if engine == runtimes.STRATA:  # (45.2в) Strata downloads and prepares it, then the card for its trial -
-                await self._prepare_strata(found, cancel)  # its question a chat's: through the gate, as a chat model's
-                await self._card(job_id, cancel)
-                reachable = await self._configure_strata(await self._get(job_id))
+                try:  # its question a chat's: through the gate, as a chat model's
+                    await self._prepare_strata(found, cancel)
+                    await self._card(job_id, cancel)
+                    reachable = await self._configure_strata(await self._get(job_id))
+                except (InstallError, llama_config.ConfigError) as exc:
+                    if not found["plan"].get("was"):
+                        raise
+                    await self._strata_back(await self._get(job_id), str(exc))  # 45.1в: other settings - not these
+                    return
                 await self._try_strata(await self._get(job_id), reachable)
                 return
             await self._download(found, cancel)
@@ -2496,10 +2504,10 @@ class Installer:
         await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
         await self._set(job_id, status="downloading", error="")
         report = self._strata_reporter(job_id, found["total_bytes"])
+        settings = {k: found["plan"][k] for k in strata.SETTINGS if k in found["plan"]}  # 45.1в: the person's
         try:
             prepared = await asyncio.to_thread(strata.prepare, strata.home(), found["plan"]["strata"], folder,
-                                               report=report, cancel=cancel,
-                                               context=found["plan"]["context"])  # fmt: skip
+                                               report=report, cancel=cancel, settings=settings)  # fmt: skip
         except strata.StrataError as exc:
             if cancel.is_set():
                 raise hf.Cancelled() from exc
@@ -2516,10 +2524,12 @@ class Installer:
             text = await asyncio.to_thread(config_text)
             model_id = found["model_id"]
             if model_id in llama_config.model_blocks(text):
-                if _ours(text, model_id, job_id):
-                    text = llama_config.remove_model(text, model_id)  # an earlier try of this install: written anew
+                if _ours(text, model_id, job_id):  # an earlier try of this install, or its earlier settings (45.1в):
+                    text = llama_config.remove_model(text, model_id)  # written anew - and the model let go, the
+                    await self._unload(model_id)  # trial is of the new run config
                 else:
                     model_id = llama_config.free_id(text, model_id)  # someone else's model took the name meanwhile
+            chosen = {k: plan[k] for k in ("kv", "parallel", "drafting") if k in plan}  # 45.1в: the window reads them
             block = llama_config.strata_block(
                 model_id,
                 name=found["name"],
@@ -2529,7 +2539,7 @@ class Installer:
                 env=await asyncio.to_thread(strata.serve_env, base),
                 context=plan["context"],
                 ttl=SPLIT_TTL_S,  # its experts in the RAM and the card almost whole: let go when not asked
-                metadata={"source": f"github.com/{strata.REPO}", "license": "?", "localchat_install": job_id},
+                metadata={**chosen, "source": f"github.com/{strata.REPO}", "license": "?", "localchat_install": job_id},
             )
             new = llama_config.add_model(text, model_id, block)
             backup = await asyncio.to_thread(llama_config.write, path, new)
@@ -2545,34 +2555,88 @@ class Installer:
 
     async def _try_strata(self, found: dict[str, Any], reachable: bool) -> None:
         """(45.2в) The trial: the model answers one question through llama-swap. No smaller settings to try - Strata
-        chose them - and no tuning or draft afterwards (its own engine guesses ahead)."""
+        chose them - and no tuning or draft afterwards (its own engine guesses ahead). Other settings (45.1в) that do
+        not start: the earlier ones back (`_strata_back`), the model stays."""
         job_id, model_id = found["id"], found["model_id"]
         client = self._clients.get(job_id)
         if not reachable or self.trial is None or client is None:
             why = tr("llama-swap не отвечает — модель проверится при первом разговоре") if not reachable else \
                 tr("проверка запуска не выполнялась")  # fmt: skip
-            await self._set(job_id, status="done", trial={"skipped": why})
-            return
-        await self._set(job_id, status="trial")
-        model = await self._model(model_id)
-        if model is None:
-            result = {"ok": False, "error": tr("хаб не видит модель в списке llama-swap")}
+            result: dict[str, Any] = {"skipped": why}
         else:
-            try:
-                with named(TRIAL):  # its request at the gate is the trial's (48.9а)
-                    result = await self._attempt(self.trial(model, client))
-            except _Deferred:
-                raise
-            except Exception as exc:  # the check's own refusal (HTTPException) or a provider's trouble
-                result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
-        if result.get("ok"):
-            await self._set(job_id, status="done", trial={"seconds": result.get("seconds"), "tok_s": result.get(
-                "tok_s"), "ttft_s": result.get("ttft_s")})  # fmt: skip
+            await self._set(job_id, status="trial")
+            model = await self._model(model_id)
+            if model is None:
+                result = {"ok": False, "error": tr("хаб не видит модель в списке llama-swap")}
+            else:
+                try:
+                    with named(TRIAL):  # its request at the gate is the trial's (48.9а)
+                        result = await self._attempt(self.trial(model, client))
+                except _Deferred:
+                    raise
+                except Exception as exc:  # the check's own refusal (HTTPException) or a provider's trouble
+                    result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
+        was = found["plan"].get("was")
+        if result.get("ok") or "skipped" in result:
+            if was:  # 45.1в: the new run config stays; the earlier one, under another name, goes
+                base = strata.home()
+                await asyncio.to_thread(strata.drop_kept, base, was["config"])
+                if Path(was["config"]) != Path(found["plan"]["config"]):
+                    await asyncio.to_thread(strata.forget, base, {"config": was["config"]})
+            trial = result if "skipped" in result else {k: result.get(k) for k in ("seconds", "tok_s", "ttft_s")}
+            await self._set(job_id, status="done", error="", trial=trial,
+                            plan={k: v for k, v in found["plan"].items() if k != "was"})  # fmt: skip
+            return
+        if was:
+            await self._strata_back(found, result.get("error") or "")
             return
         await self._withdraw(model_id)
         await self._set(job_id, status="failed", error=tr(
             "модель скачана, но не запустилась: {error}. Файлы остались — «Повторить» попробует снова; или удалите",
             error=result.get("error") or tr("нет ответа")))  # fmt: skip
+
+    async def strata_settings(self, model_id: str, changes: dict[str, Any], client: Any) -> dict[str, Any]:
+        """(45.1в) A model AFO installed through its Strata, with other settings - Strata's own (strata.checked: the
+        context, the KV format, requests at once, the drafter), not the command's flags: Strata prepares its run
+        config again, then the card and one trial question as an install's. Ones that do not start - the earlier
+        back, said in words. The person's own Strata models keep their settings to Strata (the window: ttl only)."""
+        row = next((r for r in await self._db.acall(installed) if r["model_id"] == model_id
+                    and r["plan"].get("engine") == runtimes.STRATA), None)  # fmt: skip
+        if row is None:
+            raise InstallError(tr("«{model}» ставил не AFO через Strata — её настройки меняет сама Strata",
+                                  model=model_id), 404)  # fmt: skip
+        try:
+            wanted = strata.checked(changes)
+        except strata.StrataError as exc:
+            raise InstallError(str(exc), 422) from exc
+        plan = row["plan"]
+        now = {k: plan[k] for k in strata.SETTINGS if k in plan}
+        if {**now, **wanted} == now:
+            return row
+        await asyncio.to_thread(strata.keep, strata.home(), plan["config"])
+        was = {**now, "config": plan["config"], "profile": plan.get("profile", "")}
+        self.card.let_go(model_id)  # as removing it does (48.9г): the Studio's job, tuning working with it - stopped
+        await self._unload(model_id)
+        self._clients[row["id"]] = client
+        await self._set(row["id"], status="queued", error="", plan={**plan, **wanted, "was": was})
+        self._kick()
+        return await self._get(row["id"])
+
+    async def _strata_back(self, found: dict[str, Any], error: str) -> None:
+        """(45.1в) Other settings that did not start or were not prepared: the run config as it was, the block
+        written with it, the model as it was - and why, in words."""
+        job_id, plan, was = found["id"], found["plan"], found["plan"]["was"]
+        base = strata.home()
+        await asyncio.to_thread(strata.put_back, base, was["config"])
+        if plan.get("config") and Path(plan["config"]) != Path(was["config"]):  # another context: its own name
+            await asyncio.to_thread(strata.forget, base, {"config": plan["config"]})
+        back = {k: v for k, v in plan.items() if k not in (*strata.SETTINGS, "was")} | was
+        await self._set(job_id, plan=back)
+        with contextlib.suppress(InstallError, llama_config.ConfigError):
+            await self._configure_strata(await self._get(job_id))
+        await self._set(job_id, status="done", error=tr(
+            "новые настройки Strata не запустились: {error}. Модель работает с прежними",
+            error=error or tr("нет ответа")))  # fmt: skip
 
     def _done(self, model_id: str) -> None:
         if self.on_done is not None:

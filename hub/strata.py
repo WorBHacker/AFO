@@ -14,6 +14,7 @@ a model already prepared that test start loads the model (45.0): an update then 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -65,6 +66,12 @@ MODELS: dict[str, dict[str, Any]] = {
 # (45.2б) where AFO puts Strata in by itself: its smallest model fits
 SMALLEST = "flash-next-coder-iq1_m"
 CONTEXT = 65536  # what a model is made ready with: the stand's run (45.0); the window changes it later (45.1в)
+# (45.1в) what the window changes of a model of AFO's Strata - `strata launch`'s own settings (control 0.1.64): the
+# context it offers (32k-256k), its KV formats (KV_MODES, int8 its default), its drafters (DRAFTING_MODES)
+SETTINGS = ("context", "kv", "parallel", "drafting")
+CONTEXTS = (32768, 65536, 131072, 262144)
+KV = ("int8", "q4_0", "k8v4", "fp16")
+DRAFTING = ("auto", "mtp", "dflash2", "off")
 PREPARE_TIMEOUT_S = 12 * 3600.0  # tens of GB from Hugging Face on a slow line
 CARD_MIN_GIB = 8.0  # setup.py's SPLIT_MIN_VRAM_GB: a card holds the dense weights and the prompt's work
 EXTRA_GB = 8.0  # what Strata adds to a model in its folder: the MTP layer 5.2, DFlash2 1.2, the pack 1.5 GB (45.0)
@@ -153,6 +160,10 @@ def _started(base: Path, argv: list[str], *, cancel: threading.Event | None, tim
     began = time.monotonic()
     runs = data(base) / "runs"
     runs.mkdir(parents=True, exist_ok=True)
+    for old in runs.glob("*.log"):  # one a killed run left (`_unlink`), an hour old: no run of now writes it
+        with contextlib.suppress(OSError):
+            if time.time() - old.stat().st_mtime > 3600:
+                old.unlink()
     with tempfile.NamedTemporaryFile(dir=runs, suffix=".log", delete=False) as said:
         log_file = Path(said.name)
     lines: list[str] = []
@@ -194,12 +205,23 @@ def _started(base: Path, argv: list[str], *, cancel: threading.Event | None, tim
             if rest:
                 lines.append(rest.decode("utf-8", "replace"))
     finally:
-        log_file.unlink(missing_ok=True)
+        _unlink(log_file)
     text = "\n".join(lines)
     if process.returncode != 0:
         raise StrataError(tr("Strata ответила ошибкой ({code}): {said}", code=process.returncode,
                              said=" ".join(text.split())[-400:]))  # fmt: skip
     return text
+
+
+def _unlink(path: Path) -> None:
+    """A run's log gone. A Strata just killed: Windows (its antivirus too) may hold the file a moment longer -
+    WinError 32 made a stopped install «failed» (45.2в); one still held is left for the next run to take away."""
+    for _ in range(20):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            time.sleep(0.1)
 
 
 def run_json(base: Path, args: list[str], **kwargs: Any) -> dict[str, Any]:
@@ -288,17 +310,36 @@ def computer() -> tuple[str, float, float]:
     return build, vram, (memory_sample() or {}).get("ram_total_gib") or 0.0
 
 
+def checked(changes: dict[str, Any]) -> dict[str, Any]:
+    """(45.1в) The settings asked for a model of AFO's Strata, as `strata launch` takes them (its own words, control
+    0.1.64): the context of CONTEXTS, the KV format, requests at once 1-8, the drafter; anything else - StrataError."""
+    out: dict[str, Any] = {}
+    for key, value in changes.items():
+        number = isinstance(value, int) and not isinstance(value, bool)
+        if (key == "context" and number and value in CONTEXTS) or (key == "parallel" and number and 1 <= value <= 8):
+            out[key] = int(value)
+        elif (key == "kv" and value in KV) or (key == "drafting" and value in DRAFTING):
+            out[key] = value
+        else:
+            raise StrataError(tr("у Strata нет настройки {key} = {value}", key=key, value=value))
+    return out
+
+
 def prepare(base: Path, key: str, data_dir: Path, *, report: Callable[[str, float | None, str], None],
-            cancel: threading.Event, context: int = CONTEXT) -> dict[str, str]:  # fmt: skip
+            cancel: threading.Event, settings: dict[str, Any] | None = None) -> dict[str, str]:  # fmt: skip
     """(45.2в) A model of MODELS made ready by Strata without starting it (blocking, strata_prepare.py on its
     Python): its files downloaded by Strata into `data_dir` (`models`, `mtp`, `packs` there), the draft layer, the
     pack, the run config - each step's name, share (0-100 or None) and words to `report` as they come. Not tuned:
-    Strata's tuning loads the model, past the card's queue. {profile, config}: what `serve --profile` takes."""
-    model = MODELS[key]
+    Strata's tuning loads the model, past the card's queue. `settings` (45.1в, `checked`) - Strata's own defaults
+    for those not given, the context CONTEXT. {profile, config}: what `serve --profile` takes."""
+    model, settings = MODELS[key], settings or {}
     script = Path(__file__).with_name("strata_prepare.py")
     args = ["-I", "-X", "utf8", str(script), str(terminal(base)), "--model", model["model"], "--family",
-            model["family"], "--data-dir", str(data_dir), "--context", str(context), "--vision", "off", "--access",
-            "local", "--port", "18080", "--tune", "skip"]  # fmt: skip
+            model["family"], "--data-dir", str(data_dir), "--context", str(settings.get("context", CONTEXT)),
+            "--vision", "off", "--access", "local", "--port", "18080", "--tune", "skip"]  # fmt: skip
+    for setting in ("kv", "parallel", "drafting"):
+        if setting in settings:
+            args += [f"--{setting}", str(settings[setting])]
     prepared: dict[str, str] = {}
     said: list[str] = []
 
@@ -346,6 +387,28 @@ def forget(base: Path, prepared: dict[str, str]) -> None:
     for place in places:
         if base.resolve() in place.resolve().parents:
             place.unlink(missing_ok=True)
+
+
+def _kept(base: Path, config: str) -> Path:
+    return data(base) / "kept" / Path(config).name
+
+
+def keep(base: Path, config: str) -> None:
+    """(45.1в) A copy of a model's run config before Strata prepares it again with other settings: its name is the
+    model's and the context's, so other KV, requests or drafter write over it - `put_back` returns it."""
+    kept = _kept(base, config)
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(config, kept)
+
+
+def put_back(base: Path, config: str) -> None:
+    """The run config as it was before the other settings (`keep`), when they did not start."""
+    if _kept(base, config).is_file():
+        os.replace(_kept(base, config), config)
+
+
+def drop_kept(base: Path, config: str) -> None:
+    _kept(base, config).unlink(missing_ok=True)
 
 
 def _download(files: list[dict[str, Any]], downloads: Path, base_bytes: int, report: Callable[..., None],
