@@ -1687,13 +1687,16 @@ class Installer:
         verdict (strata.verdict), words}]}."""
         ready = await asyncio.to_thread(strata.installed, strata.home())
         build, vram, ram = await asyncio.to_thread(strata.computer)
+        done = {r["plan"].get("strata"): r["model_id"] for r in await self._db.acall(installed)}
         models = []
         for key, entry in strata.MODELS.items():
             verdict = strata.verdict(key, build, vram, ram)
             models.append({"id": key, "name": entry["name"], "purposes": entry["purposes"],
+                           "purpose_words": [tr(PURPOSES[p]) for p in entry["purposes"] if p in PURPOSES],
                            "ram_gib": entry["ram_gib"], "download_gb": entry["download_gb"], "verdict": verdict,
-                           "words": tr(STRATA_VERDICTS[verdict])})  # fmt: skip
-        return {"ready": ready, "models": models}
+                           "words": tr(STRATA_VERDICTS[verdict]),
+                           "installed": [done[key]] if key in done else []})  # fmt: skip
+        return {"ready": bool(ready), "models": models}
 
     async def install_strata(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
         """(45.2в) A model of AFO's Strata (strata.MODELS): {id, drive or folder}. Strata downloads it from Hugging

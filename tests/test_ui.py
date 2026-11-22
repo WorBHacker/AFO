@@ -551,9 +551,12 @@ class FakeClient:
 
     llama_reserve = 1.0  # the video memory a model may not count on, as the hub says it (38.3)
 
+    llama_extra: ClassVar[list] = []  # models of the config beside LLAMA (45.1в: one of AFO's own Strata)
+    strata_answer: ClassVar[dict] = {"ready": False, "models": []}  # GET /v1/install/strata (45.2г)
+
     def llama_models(self):
         big = {"spec": dict(self.llama_spec), **self.llama_big}
-        models = [{**m, **big} if m["id"] == "big" else dict(m) for m in LLAMA]
+        models = [{**m, **big} if m["id"] == "big" else dict(m) for m in [*LLAMA, *self.llama_extra]]
         return {"models": models, "vram_total_mib": 16384, "vram_reserve_gib": self.llama_reserve,
                 "backups": []}  # fmt: skip
 
@@ -858,6 +861,22 @@ class FakeClient:
     def join_film(self, film_id, fade=None):
         self.film_calls.append(("join", film_id, fade))
         return self._film(film_id, status="joining", error="")
+
+    def install_strata(self):
+        return self.strata_answer
+
+    def install_strata_start(self, spec):
+        self.install_calls.append(("strata", spec))
+        job = {"id": "s1", "repo": "Niko1221/Strata", "quant": "IQ1_M", "name": "Qwen3.8-Flash-Next Coder IQ1_M",
+               "model_id": spec["id"], "status": "queued", "done_bytes": 0, "total_bytes": 58_400_000_000,
+               "percent": 0.0, "error": "", "trial": {}, "files": [], "plan": {"engine": "strata",
+                                                                               "strata": spec["id"]}}  # fmt: skip
+        self.install_jobs_list = [job]
+        return {"job": job}
+
+    def strata_settings(self, model_id, changes):
+        self.model_calls.append(("strata", model_id, changes))
+        return {"job": {**self.install_jobs_list[0], "status": "queued"} if self.install_jobs_list else {}}
 
     def install_pictures_start(self, spec):
         self._licensed(spec["id"], spec["id"], spec.get("licence_ok"))
@@ -12270,6 +12289,86 @@ def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_chosen_by_clicks(qa
         wait_until(lambda: improve.lips == "clip")
         window.grabWindow()
         assert need.property("text") == "В ролике нет звука — выберите файл с голосом" and not go.property("enabled")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+STRATA_MODELS = {"ready": True, "models": [
+    {"id": "flash-next-coder-iq1_m", "name": "Qwen3.8-Flash-Next Coder IQ1_M", "purposes": ["code", "chat"],
+     "purpose_words": ["Код", "Разговоры"], "ram_gib": 32.0, "download_gb": 58.4, "verdict": "fits",
+     "words": "помещается: эксперты модели — в ОЗУ, видеокарта — почти вся", "installed": []},
+    {"id": "flash-next-iq3_s", "name": "Qwen3.8-Flash-Next IQ3_S", "purposes": ["chat", "code"],
+     "purpose_words": ["Разговоры", "Код"], "ram_gib": 62.0, "download_gb": 83.6, "verdict": "slower",
+     "words": "медленнее: эксперты не помещаются в ОЗУ, Strata читает часть с диска", "installed": []}]}  # fmt: skip
+OWN_STRATA = {"id": "flash", "name": "Flash", "engine": "strata", "editable": False, "ttl": 900,
+              "profile": "C:/AFO/engines/strata/home/Local/Strata/launch/iq1_m-64k.json",
+              "strata": {"context": 65536, "kv": "int8", "parallel": 0, "drafting": "auto"}}  # fmt: skip
+
+
+def test_strata_models_in_the_catalog_and_their_settings_in_the_models_sheet(qapp):
+    """45.2г: once the scanner has put AFO's own Strata in, its models are in «Подборка» beside the curated ones -
+    «через Strata, ≈ N ГБ, по щелчку», one each - and «Установить» starts an install through Strata; before, none.
+    45.1в: a model AFO installed through its Strata has its settings in the models sheet - Strata prepares it again
+    with them; the person's own Strata model keeps only «выгрузка по времени»."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        view = app.install_view
+        app.openUi("install-models")
+        wait_until(lambda: not app.bg.busy and view.catalog)
+        assert not any(r["repo"].startswith("strata:") for r in view.catalog)  # Strata not in yet
+        client.strata_answer = STRATA_MODELS
+        view._load_catalog()
+        wait_until(lambda: not app.bg.busy and any(r["repo"].startswith("strata:") for r in view.catalog))
+        coder, big = [r for r in view.catalog if r["repo"].startswith("strata:")]
+        assert (coder["offer"], coder["tone"], coder["canInstall"], coder["variants"]) == (
+            "через Strata, ≈ 58 ГБ, по щелчку", "ok", True, False)  # fmt: skip
+        assert big["tone"] == "warn" and "с диска" in big["words"] and coder["purposes"] == "Код · Разговоры"
+        view.setPurpose("vision")
+        assert not any(r["repo"].startswith("strata:") for r in view.catalog)  # not for pictures
+        view.setPurpose("code")
+        assert [r["id"] for r in view.catalog][-2:] == ["flash-next-coder-iq1_m", "flash-next-iq3_s"]
+        view.installRecommended(coder["repo"])
+        wait_until(lambda: not app.bg.busy and client.install_calls and client.install_calls[-1][0] == "strata")
+        assert client.install_calls[-1] == ("strata", {"id": "flash-next-coder-iq1_m"})
+        wait_until(lambda: view.catalog[-2]["job"].get("line") == "в очереди")  # its row shows the install
+        app.on_event({"type": "install.progress", "payload": {"id": "s1", "done_bytes": 5_840_000_000,
+                                                              "total_bytes": 58_400_000_000, "speed": 0,
+                                                              "words": "Downloading 5.84 of 58.4 GB"}})  # fmt: skip
+        assert view.catalog[-2]["job"]["line"].endswith("· Downloading 5.84 of 58.4 GB")  # Strata's own words
+
+        client.llama_extra = [OWN_STRATA]
+        app._set_models([*MODELS, {"id": "llama-swap/flash", "model_ref": "flash", "name": "Flash",
+                                   "locality": "local", "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        setup = app.model_setup
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        setup.open("llama-swap/coder")  # the person's own Strata model: its settings are Strata's to change
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("engine") == "strata" and sheet.property("opened"))
+        assert setup.launch["strata"] is False and setup.strataDraft == {}
+        assert not quick.window.findChild(QObject, "strataSettings").property("visible")
+        setup.open("llama-swap/flash")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("strata"))
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "strataSettings").property("visible")
+        assert setup.strataDraft == {"context": "65536", "kv": "int8", "parallel": "0", "drafting": "auto"}
+        assert [c["id"] for c in setup.strataChoices["kv"]] == ["int8", "q4_0", "k8v4", "fp16"]
+        assert not setup.strataDirty and not quick.window.findChild(QObject, "saveStrata").property("enabled")
+        setup.setStrata("kv", "q4_0")
+        setup.setStrata("context", "131072")
+        assert setup.strataDirty
+        setup.saveStrata()
+        wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+        assert app.client.model_calls[-1] == ("strata", "flash", {"context": 131072, "kv": "q4_0"})
+        assert "«Установки»" in setup.launchStatus and not setup.strataDirty
         assert quick.warnings == []
     finally:
         quick.close()

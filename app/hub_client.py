@@ -192,6 +192,17 @@ class HubClient:
     def install_pictures_start(self, spec: dict) -> dict:
         return self._call("POST", "/v1/install/pictures", spec, timeout=60)
 
+    def install_strata(self) -> dict:
+        """AFO's own Strata and the models it installs through it (45.2в): {ready, models}."""
+        return self._call("GET", "/v1/install/strata", timeout=60)
+
+    def install_strata_start(self, spec: dict) -> dict:
+        return self._call("POST", "/v1/install/strata", spec, timeout=60)
+
+    def strata_settings(self, model_id: str, changes: dict) -> dict:
+        """(45.1в) An installed Strata model's settings: Strata prepares it again, an install's job shows how."""
+        return self._call("PUT", f"/v1/install/strata/{model_id}", {"changes": changes}, timeout=60)
+
     def install_picture_repo(self, repo: str) -> dict:
         """A found model that draws, of a family AFO knows (47.5): its variants judged with the family's parts."""
         return self._call("GET", f"/v1/install/pictures/repo/{repo}", timeout=60)

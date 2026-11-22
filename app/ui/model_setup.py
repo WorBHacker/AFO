@@ -267,6 +267,31 @@ def preset_of(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int |
                  if draft and preset_draft(p, draft, view, vram_total_mib, reserve_gib) == draft), "")  # fmt: skip
 
 
+# (45.1в) a model AFO installed through its Strata: Strata's own settings (hub/strata.py's checked) as the panel's
+# choices - "0" requests at once: Strata's own, fit to the card
+STRATA_CHOICES = {
+    "context": [("32768", N_("32 тыс.")), ("65536", N_("64 тыс.")), ("131072", N_("128 тыс.")),
+                ("262144", N_("256 тыс."))],
+    "kv": [("int8", N_("обычная (int8)")), ("q4_0", N_("вдвое меньше (q4_0)")), ("k8v4", "k8v4"),
+           ("fp16", N_("без сжатия (fp16)"))],
+    "parallel": [("0", N_("сама")), ("1", "1"), ("2", "2"), ("4", "4")],
+    "drafting": [("auto", N_("сама")), ("mtp", "MTP"), ("dflash2", N_("DFlash2 (+1,2 ГБ)")), ("off", N_("выкл"))],
+}  # fmt: skip
+
+
+def strata_draft(view: dict[str, Any]) -> dict[str, str]:
+    """(45.1в) Its Strata settings as the panel's choices; {} - not a model of AFO's Strata."""
+    found = view.get("strata") or {}
+    return {key: str(found.get(key, "")) for key in STRATA_CHOICES} if found else {}
+
+
+def strata_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any]:
+    """What of the choices differs from the model's, as the hub takes it (numbers as numbers)."""
+    was = strata_draft(view)
+    return {key: int(value) if key in ("context", "parallel") else value for key, value in draft.items()
+            if was and value != was.get(key)}  # fmt: skip
+
+
 def launch_draft(view: dict[str, Any]) -> dict[str, str]:
     """A llama-swap model's launch settings as the panel's fields; a Mixture-of-Experts model's - where its experts
     are too (44.5: `moe_mode` card / n / ram, `moe_n` layers, `moe_cache` MB)."""
@@ -643,6 +668,7 @@ class ModelSetup(QObject):
         self._checking = False
         self._loading = False
         self._launch: dict[str, Any] = {}  # this model in llama-swap's config (local models), and the memory it has
+        self._strata_draft: dict[str, str] = {}  # (45.1в) a model of AFO's Strata: its settings as chosen
         self._tune: dict[str, Any] = {}  # launch settings by measurement (15.2): the job, each model's result, auto
         self._drafting: dict[str, Any] = {}  # a draft model on its way (42.5): the hub's `drafting`
         self._told: set[str] = set()  # the results already said in the status line
@@ -720,7 +746,53 @@ class ModelSetup(QObject):
         view = self._launch
         return {"engine": view.get("engine", ""), "editable": bool(view.get("editable")),
                 "profile": view.get("profile", ""), "file": view.get("file", ""), "mmproj": view.get("mmproj", ""),
-                "problem": view.get("problem", "")} if view else {}  # fmt: skip
+                "problem": view.get("problem", ""), "strata": bool(view.get("strata"))} if view else {}  # fmt: skip
+
+    @Property("QVariantMap", notify=changed)
+    def strataDraft(self) -> dict:
+        """(45.1в) A model AFO installed through its Strata: its settings as chosen in the panel."""
+        return self._strata_draft
+
+    @Property("QVariantMap", notify=changed)
+    def strataChoices(self) -> dict:
+        return {key: [{"id": i, "name": tr(name)} for i, name in rows] for key, rows in STRATA_CHOICES.items()}
+
+    @Property(bool, notify=changed)
+    def strataDirty(self) -> bool:
+        return bool(self._launch and strata_changes(self._strata_draft, self._launch))
+
+    @Slot(str, str)
+    def setStrata(self, name: str, value: str) -> None:
+        if self._strata_draft and name in self._strata_draft:
+            self._strata_draft = {**self._strata_draft, name: value}
+            self._launch_status, self._launch_failed = "", False
+            self.changed.emit()
+
+    @Slot()
+    def saveStrata(self) -> None:
+        """(45.1в) Strata prepares the model again with these: an install's job in «Установки» shows how; ones that
+        do not start - the hub brings the earlier back and says so there."""
+        changes = strata_changes(self._strata_draft, self._launch)
+        if not changes or self._launch_busy:
+            return
+        ref = self._launch["id"]
+        self._launch_busy, self._launch_failed = True, False
+        self._launch_status = tr("Прошу Strata подготовить модель заново…")
+        self.changed.emit()
+
+        def done(result: dict[str, Any]) -> None:
+            self._launch_busy = False
+            self._launch_status = tr("Strata готовит модель с новыми настройками, потом пробный запуск — ход на "
+                                     "вкладке «Установки». Если не запустится, вернутся прежние.")  # fmt: skip
+            self._launch = {**self._launch, "strata": {**(self._launch.get("strata") or {}), **changes}}
+            self.changed.emit()
+
+        def failed(error: Exception) -> None:
+            self._launch_busy = False
+            self._launch_status, self._launch_failed = tr("Не изменено: {error}", error=error), True
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.strata_settings(ref, changes), done, failed)
 
     @Property("QVariantMap", notify=changed)
     def launchDraft(self) -> dict:
@@ -792,6 +864,7 @@ class ModelSetup(QObject):
     def _load_launch(self, model_id: str) -> None:
         model = self.app.models.get(model_id) or {}
         self._launch, self._launch_draft, self._launch_status, self._launch_failed = {}, {}, "", False
+        self._strata_draft = {}
         self._launch_asked = model.get("provider", model_id.partition("/")[0]) == "llama-swap"
         if not self._launch_asked:
             return
@@ -802,6 +875,7 @@ class ModelSetup(QObject):
                 return
             self._launch = next((m for m in listing.get("models") or [] if m["id"] == ref), {})
             self._launch_draft = launch_draft(self._launch) if self._launch else {}
+            self._strata_draft = strata_draft(self._launch)  # 45.1в
             self._vram_mib = listing.get("vram_total_mib")
             self._reserve_gib = listing.get("vram_reserve_gib")
             self._launch_asked = False

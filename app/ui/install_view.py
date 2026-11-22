@@ -8,6 +8,7 @@ The hub does the work (hub/model_install.py); this only shows it and asks. Words
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,12 @@ if TYPE_CHECKING:
 PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Понимать картинки")),
             ("image", N_("Рисовать"))]  # fmt: skip
 PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own - a set of files from several
+STRATA = "strata:"  # (45.2г) a model AFO installs through its own Strata: Strata downloads and prepares it
+TONES_STRATA = {"fits": "ok", "slower": "warn", "no": "error"}  # hub.model_install.STRATA_VERDICTS
+STRATA_ABOUT = N_(
+    "Через Strata — движок для Qwen3.8-Flash-Next: эксперты модели в ОЗУ, видеокарта угадывает "
+    "слова вперёд. Strata скачает и подготовит её сама; видеокарту займёт почти всю."
+)
 RETRY_MS, RETRIES = 2000, 15  # the hub still starting: what it knows of this computer is asked again (35.1)
 TONES = {"gpu": "ok", "tight": "warn", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
 TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
@@ -213,6 +220,25 @@ def picture_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def strata_rows(strata: dict[str, Any], purpose: str = "") -> list[dict[str, Any]]:
+    """(45.2г) The models of AFO's own Strata as the catalog's rows - once the scanner has put Strata in: one each,
+    nothing to choose between, «через Strata, ≈ N ГБ, по щелчку»."""
+    if not strata.get("ready"):
+        return []
+    out = []
+    for m in strata.get("models") or []:
+        if purpose and purpose not in m.get("purposes", []):
+            continue
+        installed = bool(m.get("installed"))
+        out.append({"id": m["id"], "repo": STRATA + m["id"], "quant": "", "name": m["name"],
+                    "about": tr(STRATA_ABOUT), "purposes": " · ".join(m.get("purpose_words") or []), "license": "",
+                    "gated": False, "words": m.get("words", ""), "tone": TONES_STRATA.get(m["verdict"], "warn"),
+                    "offer": tr("через Strata, ≈ {size} ГБ, по щелчку", size=decimal(f"{m['download_gb']:.0f}")),
+                    "installed": installed, "variants": False,
+                    "canInstall": not installed and m["verdict"] != "no"})  # fmt: skip
+    return out
+
+
 def billions(params: float) -> str:
     """A parameter count in billions as people read it: «27,3», a small one «0,8»."""
     return decimal(f"{params / 1e9:.1f}")
@@ -390,7 +416,7 @@ def job_state(job: dict[str, Any] | None) -> dict[str, Any]:
     progress = progress_text(job)
     words = status_words(job["status"])
     if job["status"] == "downloading" and progress:
-        line = f"{pct:.0f} % · {progress}"
+        line = f"{pct:.0f} % · {progress}" + (f" · {job['words']}" if job.get("words") else "")  # Strata's (45.2г)
     elif job["status"] == "paused":
         line = f"{words} · {pct:.0f} %" + (f" · {progress}" if progress else "")
     elif job["status"] == "failed":
@@ -551,6 +577,7 @@ class InstallView(QObject):
         self._catalog_error = ""
         self._pictures: list[dict[str, Any]] = []  # the picture models (29.3), asked for when «Рисовать» is picked
         self._pictures_loading = False
+        self._strata: dict[str, Any] = {}  # (45.2г) AFO's own Strata and its models: {ready, models}
         self._purpose = ""
         self._tab = "catalog"
         self._query = ""
@@ -620,8 +647,16 @@ class InstallView(QObject):
     def catalog(self) -> list:
         if self._purpose == "image":
             return [{**r, "job": job_state(self._job_for_set(r["id"]))} for r in picture_rows(self._pictures)]
-        return [{**r, "job": job_state(self._job_for(r["repo"], r["quant"]))} if r["quant"] else {**r, "job": {}}
+        rows = [{**r, "job": job_state(self._job_for(r["repo"], r["quant"]))} if r["quant"] else {**r, "job": {}}
                 for r in catalog_rows(self._catalog, self._purpose)]  # fmt: skip
+        return rows + [{**r, "job": job_state(self._job_for_strata(r["id"]))}
+                       for r in strata_rows(self._strata, self._purpose)]  # fmt: skip
+
+    def _job_for_strata(self, key: str) -> dict[str, Any] | None:
+        """(45.2г) A Strata model's install still on the list - the newest."""
+        found = [j for j in self._jobs if (j.get("plan") or {}).get("strata") == key
+                 and j["status"] not in ("cancelled", "removed")]  # fmt: skip
+        return found[0] if found else None
 
     def _job_for_set(self, set_id: str) -> dict[str, Any] | None:
         """A picture model's install still on the list - the newest; a found model of its family (47.6) is not it."""
@@ -1016,6 +1051,17 @@ class InstallView(QObject):
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.install_catalog(), show, failed)
+        self._load_strata()
+
+    def _load_strata(self) -> None:
+        """(45.2г) Strata's models beside the curated list: none to show until the scanner has put Strata in - an
+        older hub without them, too."""
+
+        def show(data: dict[str, Any]) -> None:
+            self._strata = data or {}
+            self.changed.emit()
+
+        self.app._call(lambda: self.app.client.install_strata(), show, lambda _error: None)
 
     @Slot(str)
     def setTab(self, tab: str) -> None:
@@ -1283,7 +1329,7 @@ class InstallView(QObject):
 
     # ================= installing =================
 
-    def _start(self, spec: dict[str, Any], *, pictures: bool, key: str) -> None:
+    def _start(self, spec: dict[str, Any], *, pictures: bool, key: str, strata: bool = False) -> None:
         """`key` - the button it was asked from (0.1.16 step 9а): it says «Устанавливается…» until the hub answers, a
         second click on it starts nothing; another model (the wizard's next purpose) is not held back by it."""
         if self._folder:
@@ -1293,7 +1339,12 @@ class InstallView(QObject):
         self._busy = True
         self.changed.emit()
         client = self.app.client
-        start = (lambda: client.install_pictures_start(spec)) if pictures else (lambda: client.install(spec))
+        if strata:  # (45.2г) through AFO's own Strata
+            start = partial(client.install_strata_start, spec)
+        elif pictures:
+            start = partial(client.install_pictures_start, spec)
+        else:
+            start = partial(client.install, spec)
 
         def done(result: dict[str, Any]) -> None:
             self._busy = False
@@ -1318,12 +1369,14 @@ class InstallView(QObject):
         key = key or f"install:{repo}:{quant}"
         if repo.startswith(PICTURES):
             self._start({"id": repo.removeprefix(PICTURES)}, pictures=True, key=key)
+        elif repo.startswith(STRATA):
+            self._start({"id": repo.removeprefix(STRATA)}, pictures=False, key=key, strata=True)
         else:
             self._start({"repo": repo, "quant": quant}, pictures=False, key=key)
 
     @Slot(str)
     def installRecommended(self, repo: str) -> None:
-        if repo.startswith(PICTURES):
+        if repo.startswith((PICTURES, STRATA)):
             self.startInstall(repo, "", key="recommended:" + repo)
             return
         model = next((m for m in self._catalog if m["repo"] == repo), None)
@@ -1487,6 +1540,7 @@ class InstallView(QObject):
                         total_bytes=total,
                         speed=payload.get("speed", 0),
                         engine_left=payload.get("engine_left", 0),  # the engine from GitHub (after 0.1.16)
+                        words=payload.get("words", ""),  # Strata's own on its steps (45.2г)
                         status="downloading",
                         percent=round(100 * done / max(total, 1), 1),
                     )

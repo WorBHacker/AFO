@@ -459,8 +459,42 @@ Sheet {
             spacing: 10
             SectionTitle { text: qsTr("Запуск в llama-swap — config.yaml") }
             Note {
-                visible: ModelSetup.launch.engine === "strata"
+                visible: ModelSetup.launch.engine === "strata" && !ModelSetup.launch.strata
                 text: qsTr("Запускается через Strata по профилю %1 — его настройки меняет сама Strata. Здесь — только выгрузка по времени.").arg(ModelSetup.launch.profile || "")
+            }
+            // 45.1в: a model AFO installed through its own Strata - Strata prepares it again with these
+            Column {
+                objectName: "strataSettings"
+                visible: ModelSetup.launch.strata === true
+                width: parent.width
+                spacing: 8
+                Note {
+                    width: parent.width
+                    text: qsTr("Установлена AFO через Strata. Strata подготовит модель заново с этими настройками и проверит запуск; если не запустится — вернёт прежние.")
+                }
+                Repeater {
+                    model: [{ id: "context", name: qsTr("Контекст, токенов") }, { id: "kv", name: qsTr("Память разговора") },
+                            { id: "parallel", name: qsTr("Запросов сразу") }, { id: "drafting", name: qsTr("Угадывание вперёд") }]
+                    delegate: Row {
+                        required property var modelData
+                        spacing: 10
+                        Label { width: 150; text: modelData.name; anchors.verticalCenter: parent.verticalCenter }
+                        Segmented {
+                            objectName: "strata_" + modelData.id
+                            options: ModelSetup.strataChoices[modelData.id] || []
+                            value: ModelSetup.strataDraft[modelData.id] || ""
+                            onPicked: (id) => ModelSetup.setStrata(modelData.id, id)
+                        }
+                    }
+                }
+                PlainButton {
+                    objectName: "saveStrata"
+                    kind: "primary"
+                    iconName: "check"
+                    enabled: ModelSetup.strataDirty && !ModelSetup.launchBusy
+                    text: qsTr("Подготовить заново")
+                    onClicked: ModelSetup.saveStrata()
+                }
             }
             Note {
                 visible: ModelSetup.launch.editable === true
