@@ -876,8 +876,10 @@ class Tuner:
 
     async def _bench_all(self, text: str, view: dict[str, Any], info: dict[str, Any],
                          file: Path) -> list[dict[str, Any]]:  # fmt: skip
-        """llama-bench run for each KV cache type (`caches`), what it measured. TuneError - it is missing beside
-        llama-server, fell or gave nothing (0.1.15 3б); let go for a senior or «Остановить» - _Halted, not a failure."""
+        """llama-bench run for each KV cache type (`caches`), what it measured. One type falling is its own (portion
+        2, step 2: llama.cpp makes no context with q8_0 - f16 is measured all the same). TuneError - it is missing
+        beside llama-server, fell on each type (the first one's words) or gave nothing (0.1.15 3б); let go for a senior
+        or «Остановить» - _Halted, not a failure."""
         bench = bench_path(text)
         threads = psutil.cpu_count(logical=False) or os.cpu_count() or 4
         depth = DEPTH if (info.get("context_trained") or 0) >= 2 * DEPTH else 0
@@ -892,18 +894,23 @@ class Tuner:
             asyncio.run_coroutine_threadsafe(self._publish(False), loop)
 
         measured: list[dict[str, Any]] = []
+        fell: list[TuneError] = []
         for kind in kinds:
             try:
                 lines = await asyncio.to_thread(self._run, command(bench, view, kind, threads=threads, depth=depth),
                                                 progress)  # fmt: skip
-            except TuneError:
+            except TuneError as exc:
                 if self._halt.is_set():  # killed with nothing measured: let go, not fallen (48.9б1, 0.1.15 3а)
                     raise _Halted from None
-                raise
+                log.info("llama-bench with the %s cache: %s; the other types are measured all the same", kind, exc)
+                fell.append(exc)
+                continue
             if self._halt.is_set():
                 raise _Halted
             measured += results(lines)
         if not measured:
+            if fell:
+                raise fell[0]
             raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
         return measured
 

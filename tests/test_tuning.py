@@ -1287,6 +1287,37 @@ models:
         assert engines.advice(lc.server_of(text)) == words
 
 
+def test_llama_bench_failing_on_one_cache_measures_the_other(hub, setup, tmp_path):  # noqa: F811
+    """«Стабилизация», portion 2, step 2 (found at 0.1.15 3б): llama-bench is run once for each kind of the
+    conversation's memory (q8_0, then f16) - it fell on the first without a line, and the second was not run: the
+    whole of llama-bench's measuring was a failure. Now one kind falling is its own: the other is measured, and its
+    fastest settings are written. Both falling - the first one's words, as before. A real program in llama-bench's
+    place, falling on q8_0 only."""
+    bench = tmp_path / "bench.py"
+    measured = [line(True, "f16", 512, 16, pp=900), line(True, "f16", 512, 16, tg=40),
+                line(True, "f16", 2048, 16, pp=1500), line(True, "f16", 2048, 16, tg=52)]  # fmt: skip
+    bench.write_text("import sys\nargs = sys.argv[1:]\n"
+                     "if args[args.index('-ctk') + 1] == 'q8_0':\n"
+                     "    print('main: error: failed to create context with model', file=sys.stderr)\n"
+                     "    sys.exit(1)\n"
+                     f"for text in {measured!r}:\n    print(text, flush=True)\n", encoding="utf-8")  # fmt: skip
+    asked = []
+    found = real_bench(tuner(hub, measured={}), bench)
+    run = found._run
+    found._run = lambda command, progress: (asked.append(command[command.index("-ctk") + 1]), run(command, progress))[1]
+    result = asyncio.run(found.tune("big"))
+    assert asked == ["q8_0", "f16"], "llama-bench was not run for f16 after q8_0 fell"
+    assert result["status"] == "better", result
+    view = lc.model_view(setup.read_text(encoding="utf-8"), "big")
+    assert (view["cache_type"], view["ubatch"]) == ("f16", 2048)
+
+    bench.write_text("import sys\nprint('main: error: failed to load model', file=sys.stderr)\nsys.exit(1)\n",
+                     encoding="utf-8")  # fmt: skip
+    asked.clear()
+    fell = asyncio.run(found.tune("big"))  # the config's own type first now: f16
+    assert sorted(asked) == ["f16", "q8_0"] and fell["status"] == "failed" and "failed to load model" in fell["error"]
+
+
 def test_llama_bench_failing_does_not_cancel_the_drafts_measuring(hub, setup, spec_server, tmp_path):  # noqa: F811
     """0.1.15, step 3б: llama-bench gave no measurements or fell - the tuning ended there, and guessing ahead with the
     draft model «Ускорить» had downloaded was not measured (the draft was deleted after it). Now llama-bench's failure
