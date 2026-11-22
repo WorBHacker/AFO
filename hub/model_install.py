@@ -1047,15 +1047,26 @@ class Installer:
         await self.prune_drafts()
 
     async def prune_drafts(self) -> None:
-        """Each downloaded draft no model's command uses and none waits for - deleted (a file in use stays for the
-        next time); a draft's file gone - off the commands (unhook_lost_drafts)."""
+        """Each downloaded draft no model's command uses, none waits for and none it helped is in the config -
+        deleted (a file in use stays for the next time); a draft's file gone - off the commands (unhook_lost_drafts).
+        Helped (portion 2, step 4: the user's word at 0.1.15 3б - a draft goes only measured to its end without a
+        gain): each model whose command used it, remembered - «Снять ускорение» takes it off the command, not off the
+        disk; the model removed, it goes."""
         try:
             text = await asyncio.to_thread(config_text)
         except InstallError:
             return
-        used = {Path(v["spec"]["draft"]) for v in _views(text) if v.get("spec", {}).get("draft")}
+        try:
+            models = set(llama_config.model_blocks(text))
+        except llama_config.ConfigError:  # a config not read: nothing is known to be unused
+            return
+        users: dict[Path, set[str]] = {}
+        for view in _views(text):
+            if view.get("spec", {}).get("draft"):
+                users.setdefault(Path(view["spec"]["draft"]), set()).add(view["id"])
         for file, record in list(self._drafts.items()):
-            if record.get("waiting") or Path(file) in used:
+            record["helped"] = sorted(m for m in {*record.get("helped", []), *users.get(Path(file), ())} if m in models)
+            if record.get("waiting") or record["helped"]:
                 continue
             try:
                 await asyncio.to_thread(_delete_draft, Path(file))

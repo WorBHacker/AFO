@@ -1467,6 +1467,41 @@ def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, s
     assert not draft.exists() and hub.portal.call(installer.draft_paths, "big", draft) == []
 
 
+def test_a_draft_that_helped_stays_after_guessing_ahead_is_taken_off(hub, setup, spec_server):  # noqa: F811
+    """«Стабилизация», portion 2, step 4 (found at 0.1.15 3в): a draft that helped - measured to its end, written into
+    the model's command by its tuning - was deleted at the end of the next tuning once the person took guessing ahead
+    off («Снять ускорение»): no command named it, nobody waited for it; «Ускорить» downloaded it again. Against the
+    user's word at 3б: a draft goes only once measured to its end without a gain. Now it stays while the model it
+    helped is in the config; that model removed - the next tuning's end takes it away. The hub's own installer keeps
+    the drafts, «Снять ускорение» is the window's request, the config's llama-server a stand-in program that runs."""
+    installer = hub.app.state.installer
+    draft = setup.parent / "draft.gguf"
+    record = {"repo": "test/Draft-GGUF", "file": "draft.gguf", "sha256": "", "size": draft.stat().st_size}
+    installer._drafts[str(draft)] = {**record, "waiting": ["big"]}
+
+    def tuned():  # the drafts as the hub has them: found by its installer, told to it after the tuning
+        found = tuner(hub, measured={"q8_0": [(512, 900, 40)]})
+        found._drafts = lambda model_id, file: asyncio.to_thread(hub.portal.call, installer.draft_paths, model_id, file)
+        found.on_tuned = lambda model_id, result: asyncio.to_thread(hub.portal.call, installer.tuned, model_id, result)
+        return found
+
+    helped = asyncio.run(tuned().tune("big"))
+    assert (helped["spec"]["status"], helped["spec"]["kind"]) == ("better", "draft"), helped
+    assert draft.exists() and lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["draft"]
+    off = hub.put("/v1/llama/models/big", json={"changes": {"spec_type": "none"}})  # «Снять ускорение»
+    assert off.status_code == 200, off.text
+    assert not lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["draft"]
+    again = asyncio.run(tuned().tune("big"))  # the next tuning: measured to its end, nobody waits for the draft
+    assert "spec" in again and again["spec"]["kind"] != "draft", again
+    assert draft.exists(), "the draft that helped deleted after «Снять ускорение»"
+    assert str(draft) in installer._drafts
+
+    removed = lc.remove_model(setup.read_text(encoding="utf-8"), "big")
+    setup.write_text(removed, encoding="utf-8")  # the model it helped is gone
+    hub.portal.call(installer.prune_drafts)  # as at the end of the next tuning
+    assert not draft.exists() and str(draft) not in installer._drafts
+
+
 def test_the_measuring_says_how_much_there_is_before_its_first_line(hub, setup, spec_server, tmp_path,  # noqa: F811
                                                                      monkeypatch):  # fmt: skip
     """0.1.15, step 4: the window said «Меряю: 0 из ?» for minutes - llama-bench loads the model before its first
