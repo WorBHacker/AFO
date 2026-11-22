@@ -970,7 +970,7 @@ class Installer:
     async def _speed_up(self, model_id: str) -> None:
         try:
             await self._bus.publish("install.draft", self.drafting_state(model_id))
-            await self._fetch_draft(model_id)
+            await self._fetch_draft(model_id, automatic=self._speedups.get(model_id, False))
         except (InstallError, hf.HubError, hf.Cancelled, llama_config.ConfigError, OSError, GGUFError) as exc:
             log.info("no draft model for %s: %s", model_id, exc)
             await self._say_draft(model_id, {"model_id": model_id, "error": str(exc) or tr("загрузка остановлена")})
@@ -981,16 +981,21 @@ class Installer:
         if self.on_speed_up is not None:
             self.on_speed_up(model_id, automatic)
 
-    async def _fetch_draft(self, model_id: str) -> None:
+    async def _fetch_draft(self, model_id: str, *, automatic: bool = False) -> None:
         """The catalog's drafts paired with this model on the disk (drafts_for; 44.8: each of those made for it): one
         AFO has is taken again, another waits for the installs' downloads (one at a time) and comes to the fastest
         drive with room, its sha256 checked; the model waits for its tuning to measure it. Nothing without a graphics
-        card (a draft only slows the processor down - ngram is measured) or for a model not llama.cpp's."""
+        card (a draft only slows the processor down - ngram is measured) or for a model not llama.cpp's. By itself
+        (`automatic`: after an install) - nothing for a model not whole on the card (portion 2, step 7: the draft needs
+        room there too, and nobody is there to ask, as the window asks since 0.1.15 step 7)."""
         if not self.space().get("vram_gib"):
             return
         text = await asyncio.to_thread(config_text)
         view = llama_config.model_view(text, model_id)
         if not runtimes.drafted(view):  # 45.1: its engine guesses ahead with a draft, its file named
+            return
+        if automatic and not await asyncio.to_thread(self._whole, text, model_id):
+            log.info("no draft by itself for %s: it does not lie on the graphics card whole", model_id)
             return
         build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
         for entry in await self.drafts_for(Path(view["file"]), build["spec_types"] if build else None):  # 44.4
@@ -1190,6 +1195,15 @@ class Installer:
     def space(self) -> dict[str, Any]:
         status = self._status() or self._kept_machine()
         return room(status, self.reserve, self._others(status))
+
+    def _whole(self, text: str, model_id: str) -> bool:
+        """Whether the model as the config launches it lies on the graphics card whole - the estimate the window's line
+        under the presets says it by (0.1.15: «Поместится в видеокарту целиком», experts in RAM too), the person's
+        reserve kept; the card or the model's file not known - as if it did (blocking: in a thread)."""
+        status = self._status() or self._kept_machine()
+        total = ((status or {}).get("gpu") or {}).get("vram_total_mib")
+        found = _estimated(text, model_id, total, self.reserve.get("vram_gib", RESERVE_GIB))
+        return found is None or found["verdict"] in ("fits", "unknown")
 
     def _others(self, status: dict[str, Any] | None) -> float | None:
         """What the desktop and other programs hold of the video memory (the fix after 0.1.15), GiB: measured while
@@ -2761,7 +2775,8 @@ def config_text() -> str:
                               path=path), 409) from exc  # fmt: skip
 
 
-def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str, Any] | None:
+def _estimated(text: str, model_id: str, vram_total_mib: int | None,
+               reserve_gib: float = RESERVE_GIB) -> dict[str, Any] | None:  # fmt: skip
     """estimate() of a model as the config launches it, its file's header read (blocking: in a thread); None when it
     cannot be told - not llama.cpp's, not in the config, its file not read."""
     try:
@@ -2778,7 +2793,7 @@ def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str
     return estimate(info, context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=mmproj,
                     mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=vram_total_mib,
-                    draft=draft_load(view), moe=moe_load(view))  # fmt: skip
+                    reserve_gib=reserve_gib, draft=draft_load(view), moe=moe_load(view))  # fmt: skip
 
 
 def _ours(text: str, model_id: str, job_id: str) -> bool:

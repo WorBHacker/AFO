@@ -2488,6 +2488,51 @@ def test_a_second_speed_up_starts_no_second_download(hub, tmp_path, monkeypatch)
         "Ищу черновую модель для ускорения на Hugging Face…")  # fmt: skip
 
 
+def test_a_model_not_whole_on_the_card_gets_no_draft_by_itself(hub, tmp_path, monkeypatch):
+    """«Стабилизация», portion 2, step 7 (found when 0.1.15 was planned): once a model was installed, AFO downloaded
+    its draft by itself (`on_done` -> `speed_up(automatic=True)`) for a model that does not lie on the graphics card
+    whole too - hundreds of megabytes for a speed-up that most likely is none: the draft needs room on the card too,
+    and there is nobody to ask (the window asks since 0.1.15 step 7). Now by itself only for a model whole on the card
+    by the same estimate as the window's line; its tuning is asked all the same. The hub's own wiring and downloader,
+    a stand-in Hugging Face."""
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [{"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+                          "architectures": ["tiny"]}]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    model = tmp_path / "own" / "Tiny-Q4_K_M.gguf"
+    model.parent.mkdir()
+    model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+    text = hub.config.read_text(encoding="utf-8")
+    for name, layers in (("tinyone", "all"), ("tinyfit", "auto")):  # llama.cpp's --fit: what an install writes then
+        block = lc.model_block(name, name=name.title(), description="", server=lc.server_command(text),
+                               model=str(model), context=8192, gpu_layers=layers)  # fmt: skip
+        text = lc.add_model(text, name, block)
+    hub.config.write_text(text, encoding="utf-8")
+    installer = hub.app.state.installer
+    asked = []
+    monkeypatch.setattr(installer, "on_speed_up", lambda model_id, automatic: asked.append((model_id, automatic)))
+    draft = mi.models_root(installer.drives()[0]) / "drafts" / "Small-Q8_0.gguf"
+
+    def installed(model_id):  # an install's end, as the hub wires it (hub/server.py: on_done)
+        async def done():
+            installer._done(model_id)
+
+        hub.portal.call(done)
+        deadline = time.monotonic() + 20
+        while installer._speeding:
+            assert time.monotonic() < deadline, installer.draftings
+            time.sleep(0.05)
+
+    hub.app.state.status.latest = {**SPACE, "gpu": {**SPACE["gpu"], "vram_total_mib": 1536}}  # 0,5 GB for models
+    for model_id in ("tinyone", "tinyfit"):
+        installed(model_id)
+        assert not draft.exists(), f"{model_id}: a draft downloaded by itself for a model not whole on the card"
+        assert asked[-1] == (model_id, True), "its tuning not asked"
+    hub.app.state.status.latest = SPACE  # 15 GB for models: whole on the card - by itself, as before
+    installed("tinyone")
+    assert draft.read_bytes() == DRAFTS["test/Small-GGUF"]["Small-Q8_0.gguf"] and asked[-1] == ("tinyone", True)
+
+
 def test_two_models_speeding_up_at_once_each_have_their_own_word(hub, tmp_path, monkeypatch):
     """«Стабилизация», portion 2, step 6 (found when 0.1.15 was planned): «Ускорить» for a second model while the
     first one's draft was on its way waited without a word - the hub had one `drafting`, and the first one's download
