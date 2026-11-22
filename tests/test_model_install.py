@@ -2486,3 +2486,66 @@ def test_a_second_speed_up_starts_no_second_download(hub, tmp_path, monkeypatch)
     assert answers[0].json()["drafting"] == {"model_id": "tinyone", "looking": True}
     assert ms.spec_text({}, "tinyone", {}, {"model_id": "tinyone", "looking": True})[0] == (
         "Ищу черновую модель для ускорения на Hugging Face…")  # fmt: skip
+
+
+def test_two_models_speeding_up_at_once_each_have_their_own_word(hub, tmp_path, monkeypatch):
+    """«Стабилизация», portion 2, step 6 (found when 0.1.15 was planned): «Ускорить» for a second model while the
+    first one's draft was on its way waited without a word - the hub had one `drafting`, and the first one's download
+    wrote over the second's «Ищу…»; the second's «Ускорить» came back to life in the window. Now the hub says each
+    model's own (`draftings`, beside the latest `drafting` older windows read), in its answers and its events; the
+    window reads its model's. The hub's own downloader, a stand-in Hugging Face."""
+    from app.ui import model_setup as ms
+
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [{"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+                          "architectures": ["tiny"]}]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    text = hub.config.read_text(encoding="utf-8")
+    for name in ("tinyone", "tinytwo"):
+        model = tmp_path / name / "Tiny-Q4_K_M.gguf"
+        model.parent.mkdir()
+        model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+        block = lc.model_block(name, name=name.title(), description="", server=lc.server_command(text),
+                               model=str(model), context=8192, gpu_layers="all")  # fmt: skip
+        text = lc.add_model(text, name, block)
+    hub.config.write_text(text, encoding="utf-8")
+    installer = hub.app.state.installer
+    asked, said = [], []
+    monkeypatch.setattr(installer, "on_speed_up", lambda model_id, automatic: asked.append(model_id))
+    publish = installer._bus.publish
+
+    async def heard(kind, payload, **kw):  # the hub's events as the window gets them
+        if kind == "install.draft":
+            said.append(json.loads(json.dumps(payload)))
+        return await publish(kind, payload, **kw)
+
+    monkeypatch.setattr(installer._bus, "publish", heard)
+    FakeHub.slow = 0.2  # one's draft still on its way while the other waits for it
+    assert hub.post("/v1/install/speedup/tinyone").status_code == 200
+    second = hub.post("/v1/install/speedup/tinytwo").json()
+    assert second["draftings"]["tinytwo"] == {"model_id": "tinytwo", "looking": True}, second
+
+    def on_its_way(draftings):  # whichever came first to the hub's one download at a time
+        return next((m for m, d in draftings.items() if d.get("total")), None)
+
+    deadline, state = time.monotonic() + 20, {}
+    while on_its_way(state.get("draftings") or {}) is None:
+        assert time.monotonic() < deadline, f"no draft ever on its way: {state}, {said[-3:]}"
+        time.sleep(0.02)
+        state = hub.get("/v1/install/speedup").json()
+    first = on_its_way(state["draftings"])
+    other = ({"tinyone", "tinytwo"} - {first}).pop()  # waits for that one: the same draft
+    looking = {"model_id": other, "looking": True}
+    assert state["draftings"][other] == looking, f"{other}'s word written over: {state}"
+    assert ms.spec_text({}, other, {}, ms.draft_on_its_way(state, other))[0] == (
+        "Ищу черновую модель для ускорения на Hugging Face…")  # fmt: skip
+    words = ms.spec_text({}, first, {}, ms.draft_on_its_way(state, first))[0]
+    assert words.startswith("Качаю черновую модель Small:"), words
+    while installer._speeding:
+        assert time.monotonic() < deadline, installer.draftings
+        time.sleep(0.05)
+    assert sorted(asked) == ["tinyone", "tinytwo"] and installer.draftings == {} and installer.drafting == {}
+    downloading = [p for p in said if (p["draftings"].get(first) or {}).get("total")]
+    assert downloading and all(p["draftings"].get(other) == looking for p in downloading), (
+        "an event of the one's download wrote over the other's word")  # fmt: skip
+    assert said[-1]["draftings"] == {} and ms.draft_on_its_way(said[-1], other) == {}

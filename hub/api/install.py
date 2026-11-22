@@ -316,8 +316,9 @@ async def remove(request: Request, model_id: str, client: Annotated[Client, Depe
 
 @router.get("/speedup")
 async def drafting(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
-    """The draft model on its way (42.5): {model_id, name, done, total}, its error, or {} - nothing."""
-    return {"drafting": _installer(request).drafting}
+    """The draft model on its way (42.5): {model_id, name, done, total}, its error, or {} - nothing; `draftings` -
+    each model's own (portion 2, step 6), `drafting` - the latest, as older windows read it."""
+    return _installer(request).drafting_state()
 
 
 @router.post("/speedup/{model_id}")

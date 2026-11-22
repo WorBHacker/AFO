@@ -415,7 +415,8 @@ class HubClient:
         return self._call("POST", f"/v1/install/speedup/{model_id}")
 
     def speedup_state(self) -> dict:
-        """{drafting: {model_id, name, done, total} | {model_id, error} | {}}."""
+        """{drafting: {model_id, name, done, total} | {model_id, looking} | {model_id, error} | {}, draftings: each
+        model's own of those (portion 2, step 6; an older hub - none)}."""
         return self._call("GET", "/v1/install/speedup")
 
     # --- the graphics card for models (43.6-43.7) ---

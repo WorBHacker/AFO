@@ -525,6 +525,16 @@ DRAFT_WORDS = {"draft-dflash": N_("черновик DFlash {draft}"), "draft-eag
                "draft-mtp": N_("слой MTP из файла {draft}")}  # fmt: skip
 
 
+def draft_on_its_way(state: dict[str, Any], model_id: str) -> dict[str, Any]:
+    """This model's draft on its way, from the hub's answer or event: each model's own (`draftings`, portion 2, step
+    6: one `drafting` made the first one's download write over the second's «Ищу…»); an older hub - its one
+    `drafting`, when it is this model's."""
+    if isinstance(state.get("draftings"), dict):
+        return state["draftings"].get(model_id) or {}
+    drafting = state.get("drafting") or {}
+    return drafting if drafting.get("model_id") == model_id else {}
+
+
 def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], drafting: dict[str, Any]
               ) -> tuple[str, str]:  # fmt: skip
     """The models view's line about guessing ahead (42.6) and its tone: the draft model on its way (the hub's
@@ -672,7 +682,8 @@ class ModelSetup(QObject):
         self._launch: dict[str, Any] = {}  # this model in llama-swap's config (local models), and the memory it has
         self._strata_draft: dict[str, str] = {}  # (45.1в) a model of AFO's Strata: its settings as chosen
         self._tune: dict[str, Any] = {}  # launch settings by measurement (15.2): the job, each model's result, auto
-        self._drafting: dict[str, Any] = {}  # a draft model on its way (42.5): the hub's `drafting`
+        # the drafts on their way (42.5): the hub's answer or event - each model's own (portion 2, step 6), `_drafting`
+        self._draft_state: dict[str, Any] = {}
         self._told: set[str] = set()  # the results already said in the status line
         self._pending: dict[str, str] = {}  # an action asked of the hub, not answered yet -> its word (0.1.15 step 8б)
         self._launch_draft: dict[str, str] = {}
@@ -1140,17 +1151,21 @@ class ModelSetup(QObject):
     @Property(bool, notify=draftingChanged)
     def speedBusy(self) -> bool:
         """Its draft model looked for (0.1.15 step 6: a second click starts nothing) or on its way."""
-        mine = self._drafting.get("model_id") == self._tune_id()
-        return mine and bool(self._drafting.get("looking") or self._drafting.get("total"))
+        drafting = self._drafting
+        return bool(drafting.get("looking") or drafting.get("total"))
 
-    def _set_drafting(self, drafting: dict[str, Any] | None) -> None:
-        self._drafting = drafting or {}
+    @property
+    def _drafting(self) -> dict[str, Any]:
+        """The open model's draft on its way (portion 2, step 6: its own, not the latest of the hub's)."""
+        return draft_on_its_way(self._draft_state, self._tune_id())
+
+    def _set_drafting(self, state: dict[str, Any] | None) -> None:
+        self._draft_state = state or {}
         self.draftingChanged.emit()  # not `changed` (portion 2, step 5): a number being typed stays
 
     def _load_drafting(self) -> None:
         if self.app.client is not None:
-            self.app._call(lambda: self.app.client.speedup_state(), lambda s: self._set_drafting(s.get("drafting")),
-                           lambda _e: None)  # fmt: skip
+            self.app._call(lambda: self.app.client.speedup_state(), self._set_drafting, lambda _e: None)
 
     @Slot()
     def speedUp(self) -> None:
@@ -1164,7 +1179,7 @@ class ModelSetup(QObject):
 
         def go() -> None:  # after the «да», if it asked (0.1.15 step 8б)
             self._asked("speedUp", tr("Ускорить: спрашиваю хаб…"), lambda: self.app.client.speed_up(model_id),
-                        lambda answer: self._set_drafting(answer.get("drafting")),
+                        self._set_drafting,
                         lambda e: self.app.show_error(tr("Ускорить: {error}", error=e)))  # fmt: skip
 
         tone = launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1] if \
@@ -1415,8 +1430,8 @@ class ModelSetup(QObject):
         self.app.call_or_fail(lambda: self.app.client.check_model(model_id), done, failed)
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
-        if kind == "install.draft":  # the draft model on its way (42.5)
-            self._set_drafting(payload.get("drafting"))
+        if kind == "install.draft":  # the draft model on its way (42.5): each model's own (portion 2, step 6)
+            self._set_drafting(payload)
             return
         if kind == "tune.changed":
             job = payload.get("job") or {}

@@ -9942,6 +9942,28 @@ def test_a_number_being_typed_stays_while_the_draft_downloads(qapp):
         quick.close()
 
 
+def test_the_open_models_draft_word_is_its_own(app):
+    """«Стабилизация», portion 2, step 6: the hub had one `drafting` - another model's draft on its way wrote over the
+    open model's «Ищу черновую модель…», and its «Ускорить» came back to life. Now the hub says each model's own
+    (`draftings`) and the sheet reads its model's; an older hub's one `drafting` - as before."""
+    setup = app.model_setup
+    app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                               "provider": "llama-swap", "prices": {}}])  # fmt: skip
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("editable"))
+    looking = {"model_id": "big", "looking": True}
+    send(app, "install.draft", {"model_id": "big", "drafting": looking, "draftings": {"big": looking}})
+    assert setup.specText == "Ищу черновую модель для ускорения на Hugging Face…" and setup.speedBusy
+    other = {"model_id": "small", "name": "Draft-0.6B", "done": 10 * 1024**2, "total": 300 * 1024**2}
+    send(app, "install.draft", {"model_id": "small", "drafting": other, "draftings": {"small": other, "big": looking}})
+    assert setup.specText == "Ищу черновую модель для ускорения на Hugging Face…", "another model's draft wrote over"
+    assert setup.speedBusy, "«Ускорить» back to life while its draft is looked for"
+    send(app, "install.draft", {"model_id": "big", "drafting": other, "draftings": {"small": other}})  # nothing for it
+    assert not setup.specText.startswith(("Ищу", "Качаю")) and not setup.speedBusy
+    send(app, "install.draft", {"drafting": {"model_id": "big", "name": "D", "done": 1, "total": 2}})  # an older hub
+    assert setup.specText.startswith("Качаю черновую модель D:") and setup.speedBusy
+
+
 def test_speeding_up_a_model_that_does_not_fit_asks_first(app):
     """0.1.15 step 7: «Ускорить» for a model not whole on the graphics card downloaded a draft at once - hundreds of
     megabytes for a speed-up that most likely is none: the draft needs room on the card too. Now it asks first, in the

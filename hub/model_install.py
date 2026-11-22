@@ -606,7 +606,9 @@ class Installer:
         # its draft model on the disk (42.5): then its tuning, model id and whether it waits for a quiet computer
         self.on_speed_up: Callable[[str, bool], Any] | None = None
         # a draft on its way: {model_id, looking} (0.1.15 step 6: from the first second) | {model_id, name, done,
-        # total} | {model_id, error}
+        # total} | {model_id, error} - each model's own (portion 2, step 6: one `drafting` for the hub made the first
+        # one's download write over the second's «Ищу…»); `drafting` - the latest, as older windows read it
+        self.draftings: dict[str, dict[str, Any]] = {}
         self.drafting: dict[str, Any] = {}
         self._drafts: dict[str, dict[str, Any]] = {}  # DRAFTS_SETTING
         self._speeding: set[asyncio.Task] = set()
@@ -941,25 +943,41 @@ class Installer:
         call starts nothing (0.1.15 step 6) - the person's over an automatic one makes its tuning go at once."""
         if model_id in self._speedups:
             self._speedups[model_id] = self._speedups[model_id] and automatic
-            return {"model_id": model_id, "drafting": self.drafting}
+            return self.drafting_state(model_id)
         self._speedups[model_id] = automatic
-        self.drafting = {"model_id": model_id, "looking": True}
+        self._draft_is(model_id, {"model_id": model_id, "looking": True})
         self._keep(self._speed_up(model_id))
-        return {"model_id": model_id, "drafting": self.drafting}
+        return self.drafting_state(model_id)
+
+    def drafting_state(self, model_id: str | None = None) -> dict[str, Any]:
+        """What the window hears of the drafts on their way: each model's (`draftings`) and the latest (`drafting`, as
+        older windows read it); `model_id` - whose it is about."""
+        state = {"drafting": dict(self.drafting), "draftings": {m: dict(d) for m, d in self.draftings.items()}}
+        return {"model_id": model_id, **state} if model_id else state
+
+    def _draft_is(self, model_id: str, state: dict[str, Any]) -> None:
+        """A model's draft on its way is now `state` ({} - nothing on its way); in the loop's thread."""
+        if state:
+            self.draftings[model_id] = state
+        else:
+            self.draftings.pop(model_id, None)
+        self.drafting = state or next(reversed(self.draftings.values()), {})  # another's still on its way
+
+    async def _say_draft(self, model_id: str, state: dict[str, Any], persist: bool = True) -> None:
+        self._draft_is(model_id, state)
+        await self._bus.publish("install.draft", self.drafting_state(model_id), persist=persist)
 
     async def _speed_up(self, model_id: str) -> None:
         try:
-            await self._bus.publish("install.draft", {"drafting": self.drafting})
+            await self._bus.publish("install.draft", self.drafting_state(model_id))
             await self._fetch_draft(model_id)
         except (InstallError, hf.HubError, hf.Cancelled, llama_config.ConfigError, OSError, GGUFError) as exc:
             log.info("no draft model for %s: %s", model_id, exc)
-            self.drafting = {"model_id": model_id, "error": str(exc) or tr("загрузка остановлена")}
-            await self._bus.publish("install.draft", {"drafting": self.drafting})
+            await self._say_draft(model_id, {"model_id": model_id, "error": str(exc) or tr("загрузка остановлена")})
         finally:
             automatic = self._speedups.pop(model_id, False)
-            if self.drafting == {"model_id": model_id, "looking": True}:  # nothing to download: nothing on its way
-                self.drafting = {}
-                await self._bus.publish("install.draft", {"drafting": self.drafting})
+            if self.draftings.get(model_id) == {"model_id": model_id, "looking": True}:  # nothing to download
+                await self._say_draft(model_id, {})
         if self.on_speed_up is not None:
             self.on_speed_up(model_id, automatic)
 
@@ -1001,32 +1019,36 @@ class Installer:
         await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(_check_room, dest.parent, entry["size"])
         coming = {"model_id": model_id, "name": entry["name"], "done": 0, "total": entry["size"]}
-        self.drafting = coming
-        await self._bus.publish("install.draft", {"drafting": self.drafting})
-        loop, shown = asyncio.get_running_loop(), [0.0]
+        await self._say_draft(model_id, dict(coming))
+        loop, shown, ended = asyncio.get_running_loop(), [0.0], [False]
 
-        def report(done: int) -> None:  # in the download's thread; its own - `drafting` may be another's by now
+        async def tell(state: dict[str, Any]) -> None:  # in the loop's thread: not after the download's end
+            if not ended[0]:
+                await self._say_draft(model_id, state, persist=False)
+
+        def report(done: int) -> None:  # in the download's thread; said in the loop's (each model's own: step 6)
             coming["done"] = done
             if time.monotonic() - shown[0] >= PROGRESS_S:
                 shown[0] = time.monotonic()
-                said = self._bus.publish("install.draft", {"drafting": dict(coming)}, persist=False)
-                asyncio.run_coroutine_threadsafe(said, loop)
+                asyncio.run_coroutine_threadsafe(tell(dict(coming)), loop)
 
         self._draft_cancel.clear()
         url, progress = hf.file_url(entry["repo"], entry["file"], entry["revision"]), hf.Progress()
-        for attempt in range(len(RETRIES_S) + 1):
-            try:
-                await asyncio.to_thread(hf.download, url, dest, size=entry["size"], sha256=entry["sha256"],
-                                        token=self.token(), report=report, cancel=self._draft_cancel,
-                                        progress=progress)  # fmt: skip
-                break
-            except hf.HubError as exc:
-                if exc.status in (403, 404, 429) or attempt == len(RETRIES_S):
-                    raise
-                if await asyncio.to_thread(self._draft_cancel.wait, RETRIES_S[attempt]):
-                    raise hf.Cancelled() from exc
-        self.drafting = {}
-        await self._bus.publish("install.draft", {"drafting": self.drafting})
+        try:
+            for attempt in range(len(RETRIES_S) + 1):
+                try:
+                    await asyncio.to_thread(hf.download, url, dest, size=entry["size"], sha256=entry["sha256"],
+                                            token=self.token(), report=report, cancel=self._draft_cancel,
+                                            progress=progress)  # fmt: skip
+                    break
+                except hf.HubError as exc:
+                    if exc.status in (403, 404, 429) or attempt == len(RETRIES_S):
+                        raise
+                    if await asyncio.to_thread(self._draft_cancel.wait, RETRIES_S[attempt]):
+                        raise hf.Cancelled() from exc
+        finally:
+            ended[0] = True  # a word of its progress still on its way to the loop says nothing now
+        await self._say_draft(model_id, {})
 
     async def _save_drafts(self) -> None:
         drafts = json.loads(json.dumps(self._drafts))
