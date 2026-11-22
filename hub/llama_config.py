@@ -32,7 +32,7 @@ from common.gguf import read_header
 from common.i18n import N_, tr
 from common.paths import PROJECT_ROOT, engines_home
 
-from . import engines
+from . import engines, runtimes
 
 CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
 CONFIG_SETTING = "llama_swap.config"  # the file chosen in the window (the settings table)
@@ -84,7 +84,7 @@ MOE = ("cpu_moe", "n_cpu_moe", "moe_cache_mib")
 SWITCHES = ("cpu_moe",)  # flags without a value
 MOE_CACHE_MAX_MIB = 1 << 20
 CACHE_TYPES = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0")
-SD_ENGINE = "stable-diffusion.cpp"  # a picture model's sd-server (D55, 29.3)
+SD_ENGINE = runtimes.SD  # a picture model's sd-server (D55, 29.3)
 _TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
 _MODEL_KEY = re.compile(r'^  (?:"([^"]+)"|\'([^\']+)\'|([^\s:#][^:]*)):\s*(?:#.*)?$')
 
@@ -367,7 +367,7 @@ def _llama_views(text: str) -> list[dict[str, Any]]:
     for model_id in model_blocks(text):
         with contextlib.suppress(ConfigError):
             view = model_view(text, model_id)
-            if view["engine"] == "llama.cpp" and view["editable"]:
+            if runtimes.edits(view):
                 out.append(view)
     return out
 
@@ -386,7 +386,7 @@ def match_build(text: str, build: dict[str, Any]) -> str:
             view = model_view(text, model_id)
         except ConfigError:
             continue
-        if view["engine"] != "llama.cpp" or not view["editable"]:
+        if not runtimes.edits(view):
             continue
         whole = fitted(view)
         first, last = _cmd_lines(lines, start, end)
@@ -442,13 +442,8 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     for name, value in macros(text).items():
         cmd = cmd.replace(f"${{{name}}}", value)
     tokens = _TOKEN.findall(cmd)
-    if any("llama-server" in t for t in tokens):
-        engine = "llama.cpp"
-    elif any("sd-server" in t for t in tokens) or any(re.match(rf"^\s+engine:\s*{SD_ENGINE}\s*$", line)
-                                                      for line in block):  # fmt: skip
-        engine = SD_ENGINE  # pictures (29.3): its settings are the visual module's, not the window's launch settings
-    else:
-        engine = "strata" if "serve" in tokens else "other"
+    runtime = runtimes.engine_of(tokens, block)  # 45.1: llama.cpp, pictures (29.3), Strata or one AFO does not know
+    engine = runtime.name
 
     def value(setting: str) -> str | None:
         at = _flag(tokens, FLAGS[setting])
@@ -457,15 +452,15 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     ttl = next((int(m.group(1)) for line in block if (m := re.match(r"^\s{4}ttl:\s*(\d+)", line))), 0)
     name = next((_unquote(m.group(1)) for line in block if (m := re.match(r"^\s{4}name:\s*(.+?)\s*$", line))),
                 model_id)  # fmt: skip
-    editable = engine == "llama.cpp" and edited_here
+    editable = runtime.flags and edited_here
     view: dict[str, Any] = {"id": model_id, "name": name, "engine": engine, "editable": editable, "ttl": ttl,
                             "command": cmd}  # fmt: skip
-    if engine == "llama.cpp" and not edited_here:
+    if runtime.flags and not edited_here:
         view["problem"] = tr("команда записана в одну строку — её настройки меняются в самом config.yaml")
-    if engine == "strata":
+    if engine == runtimes.STRATA:
         view["profile"] = value("model") or next((_unquote(tokens[i + 1]) for i, t in enumerate(tokens)
                                                   if t == "--profile" and i + 1 < len(tokens)), "")  # fmt: skip
-    if engine == "llama.cpp":
+    if runtime.flags:  # llama.cpp's flags (FLAGS)
         layers = value("gpu_layers")
         fit = value("fit")
         view.update({
@@ -540,8 +535,7 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str
     """The settings asked for, checked; a Strata model takes only its ttl. Guessing ahead is checked against
     `build` - the server_flags of the llama-server in the config; `advice` - where a build that has what this one
     lacks is got (12д: engines.advice)."""
-    allowed = {"ttl"} if not view["editable"] else {"ttl", "context", "gpu_layers", "flash_attn", "cache_type",
-                                                    "parallel", *COUNTS, *MOE, *SPEC_CHANGES}  # fmt: skip
+    allowed = runtimes.settings(view)  # 45.1: its engine's, the ttl only when the window does not change its command
     out: dict[str, Any] = {}
     for key, value in changes.items():
         if value is None:
@@ -901,7 +895,7 @@ def efforts_now(path: Path | None = None) -> dict[str, list[str]]:
     for model_id in model_blocks(text):
         with contextlib.suppress(ConfigError):
             view = model_view(text, model_id)
-            if view["engine"] == "llama.cpp" and (levels := _command_efforts(view)):
+            if runtimes.templated(view) and (levels := _command_efforts(view)):
                 out[model_id] = levels
     return out
 
@@ -955,8 +949,8 @@ def server_command(text: str) -> str:
             view = model_view(text, model_id)
         except ConfigError:  # a block it cannot read (a proxy, no cmd): the next one may tell
             continue
-        if view["engine"] == "llama.cpp":
-            program = next(t for t in _TOKEN.findall(view["command"]) if "llama-server" in t)
+        if runtimes.of(view) is runtimes.LLAMA:
+            program = next(t for t in _TOKEN.findall(view["command"]) if runtimes.LLAMA.program in t)
             return program if program.startswith(("'", '"')) else f'"{program}"' if " " in program else program
     raise ConfigError(tr("в config.yaml нет llama-server: сначала нужна сборка llama.cpp (мастер первого запуска)"))
 
