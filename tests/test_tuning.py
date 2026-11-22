@@ -1346,6 +1346,48 @@ def test_llama_bench_failing_does_not_cancel_the_drafts_measuring(hub, setup, sp
         assert hub.app.state.db.call(tuning.load_results)["big"]["spec"]["kind"] == "draft"
 
 
+def test_settings_that_do_not_start_leave_the_rest_measured(hub, setup, spec_server):  # noqa: F811
+    """«Стабилизация», portion 2, step 3 (found at 0.1.15 3б): the settings llama-bench found did not start the model -
+    the config came back, and the tuning ended there: guessing ahead with the draft «Ускорить» brought was not
+    measured. Now it is llama-bench's own failure, as llama-bench falling is (0.1.15 3б): the window says it, and the
+    rest is measured with the config's settings. The model taken out of the config while llama-bench measured still
+    ends the tuning: there is nothing to measure. The config's llama-server - a stand-in program that runs."""
+    draft = setup.parent / "draft.gguf"
+    before = setup.read_text(encoding="utf-8")
+    faster = {"q8_0": [(512, 900, 40), (2048, 1500, 52)]}  # llama-bench: ubatch 2048, faster than the config's own
+    found = tuner(hub, measured=faster, draft=draft)
+
+    async def check(model_id):  # the model does not start with llama-bench's ubatch 2048, starts with the rest
+        ok = lc.model_view(lc.config_path().read_text(encoding="utf-8"), model_id)["ubatch"] != 2048
+        return {"ok": ok, "error": "" if ok else "out of memory", "seconds": 3.0}
+
+    found._check = check
+    result = asyncio.run(found.tune("big"))
+    assert result["status"] == "failed" and "out of memory" in result["error"], result
+    assert "spec" in result, "the settings did not start - the tuning ended, the draft was not measured"
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-simple"]
+    assert (result["spec"]["status"], result["spec"]["kind"]) == ("better", "draft")
+    now, then = lc.model_view(setup.read_text(encoding="utf-8"), "big"), lc.model_view(before, "big")
+    assert now["spec"]["draft"] == draft.as_posix() and now["ubatch"] == then["ubatch"]  # its own back, the draft in
+    assert hub.app.state.db.call(tuning.load_results)["big"]["spec"]["kind"] == "draft"
+
+    setup.write_text(before, encoding="utf-8")
+    (spec_server / "launches.txt").unlink()
+    found = tuner(hub, measured=faster, draft=draft)
+    measure = found._run
+
+    def taken_out(command, progress):  # the person removes the model while llama-bench measures
+        text = setup.read_text(encoding="utf-8")
+        if "big" in lc.model_blocks(text):
+            setup.write_text(lc.remove_model(text, "big"), encoding="utf-8")
+        return measure(command, progress)
+
+    found._run = taken_out
+    gone = asyncio.run(found.tune("big"))
+    assert gone["status"] == "failed" and "убрали из config.yaml" in gone["error"] and "spec" not in gone, gone
+    assert not (spec_server / "launches.txt").exists(), "guessing ahead measured for a model taken out"
+
+
 def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, spec_server, monkeypatch):  # noqa: F811
     """0.1.15, step 3б (the user's word): the draft model «Ускорить» downloaded is deleted in one case only - its
     measuring went to its end and it gave no gain. Its file stays, waiting, when llama-bench failed or was stopped
@@ -1386,7 +1428,8 @@ def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, s
 
     faster = {"q8_0": [(512, 900, 40), (2048, 1500, 52)]}  # llama-bench: faster than the config's own - written
     failed = asyncio.run(tuned(measured=faster, check_ok=False).tune("big"))
-    assert failed["status"] == "failed" and "spec" not in failed  # its settings did not load: it ends there
+    # its settings did not load: the draft measured all the same (portion 2, step 3) - and did not load either
+    assert failed["status"] == "failed" and failed["spec"]["status"] == "failed", failed
     stays("llama-bench's settings did not load")
 
     found = tuned(measured=faster)

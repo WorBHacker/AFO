@@ -107,6 +107,11 @@ class TuneError(Exception):
     """The model cannot be tuned; the message is for the window."""
 
 
+class _NotStarted(TuneError):
+    """The model did not start with the settings a step wrote - its config came back (portion 2, step 3: llama-bench's
+    is its own failure, the rest is measured with the config's settings); not the model gone from the config."""
+
+
 class _Halted(Exception):
     """Automatic measuring stopped for a chat: the model is measured again later."""
 
@@ -832,14 +837,16 @@ class Tuner:
                 else:
                     await asyncio.to_thread(llama_config.write, path, back)
                 await llama_config.reloaded(self._url, list(llama_config.model_blocks(back)))
-            raise TuneError(tr("с новыми настройками модель не запустилась ({error}) — конфиг возвращён",
-                               error=checked.get("error") or tr("нет ответа")))  # fmt: skip
+            raise _NotStarted(tr("с новыми настройками модель не запустилась ({error}) — конфиг возвращён",
+                                 error=checked.get("error") or tr("нет ответа")))  # fmt: skip
         return backup.name
 
     async def _tune_bench(self, model_id: str) -> dict[str, Any]:
         """llama-bench's settings: measured, the fastest written and checked. llama-bench missing, fallen or giving
-        nothing (0.1.15 3б) - {status: failed, error}, nothing written: the experts and guessing ahead are measured
-        all the same; nothing to measure for the model (not llama.cpp's, no file, an unreadable header) - TuneError."""
+        nothing (0.1.15 3б), or the model not started with its settings - the config back (portion 2, step 3) -
+        {status: failed, error}: the experts and guessing ahead are measured all the same, with the config's settings;
+        nothing to measure for the model (not llama.cpp's, no file, an unreadable header, gone from the config while it
+        measured) - TuneError."""
         path = llama_config.config_path()
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         view = llama_config.model_view(text, model_id)
@@ -866,7 +873,14 @@ class Tuner:
                 return None
             return llama_config.edit(now, model_id, changes_for(choice))
 
-        backup = await self._write(model_id, edit)
+        try:
+            backup = await self._write(model_id, edit)
+        except _NotStarted as exc:  # the config came back (portion 2, step 3): the rest measured with its settings
+            if self._halt.is_set():  # a senior or «Остановить» while it was checked: as before
+                raise
+            log.info("llama-bench's settings for %s: %s; the experts and guessing ahead are measured all the same",
+                     model_id, exc)  # fmt: skip
+            return {"status": "failed", "error": str(exc)}
         choice, before = judged["choice"], judged["before"]
         if backup is None:
             return {"status": "same", "before": before, "after": before or choice, "settings": {}}
