@@ -117,6 +117,30 @@ as in `requirements.lock`, and the code of `hub`, `app`, `common`; the built fol
 text needs its English in the catalog — `python -m common.i18n_catalog --sync` adds the missing keys, and the tests
 fail until each has a translation.
 
+## Strata
+
+[Strata](https://github.com/Niko1221/Strata) is an engine for Qwen3.8-Flash-Next models in its own packs (Q2_0,
+IQ2_XS, IQ3_XXS, IQ3_S and Coder IQ1_M). Such a model has many “experts”: Strata keeps them in RAM, with the ones
+needed most often on the graphics card (an MoE expert cache), and guesses words ahead (MTP and DFlash2) — so a big
+model answers fast on one graphics card.
+
+AFO installs Strata by itself when its smallest model fits this computer: an NVIDIA graphics card with the CUDA
+driver, 8 GB of VRAM or more, and enough RAM for the experts with 3 GB left to Windows (35 GB or more for Coder
+IQ1_M). AFO downloads the program and its engine from GitHub (a release checked on a test stand, each file's sha256
+checked), and Strata installs the engine itself from its signed feed. Everything lives in AFO's own folder
+(`engines\strata`), with folders of its own for settings and data: a Strata you installed yourself
+(`%LOCALAPPDATA%\Strata`) is left alone — and then AFO installs none of its own.
+
+Strata's models are in “Picks” of the model installer, marked “through Strata, ≈ N GB, on a click”: nothing is
+downloaded until you click. Strata downloads the model from Hugging Face and prepares it without loading it; then
+llama-swap runs it (`strata serve --profile …`) and AFO asks it a trial question. While it works, Strata takes almost
+the whole graphics card. The context, the conversation memory, requests at once and guessing ahead are changed in the
+model's settings: Strata prepares it again, and if the model does not start with the new settings, the previous ones
+come back. A plain Qwen3.8-Flash-Next GGUF file still runs with llama.cpp.
+
+Strata is Niko1221's program under the MIT license. Thanks to its author for the engine and for the open code:
+[github.com/Niko1221/Strata](https://github.com/Niko1221/Strata).
+
 ## Claude Code and your subscription
 
 AFO never signs in to a Claude account and never asks for a password or a token. Chats with the “Claude Code” model
@@ -156,5 +180,6 @@ LGPL 3, FFmpeg in the video player (Qt's build, from PySide6-Addons) — LGPL 2.
 source is in `python\Lib\site-packages\pyside6_addons-*.dist-info\licenses\ffmpeg-license.txt`; the rest — MIT, BSD,
 Apache 2.0, MPL 2.0 and PSF; their texts (Qt's — `qt-license.txt`) lie next to them in the program's folder. The
 window's fonts, Inter and JetBrains Mono (SIL OFL 1.1), are in `app/ui/fonts`, the Lucide icons (ISC) in
-`app/ui/icons`. The engines the setup wizard downloads separately (llama.cpp, llama-swap, ripgrep) and the models
-are separate programs and data with their own licenses.
+`app/ui/icons`. The engines the setup wizard downloads separately (llama.cpp, llama-swap, ripgrep), Strata (MIT),
+which AFO installs by itself where its models fit, and the models are separate programs and data with their own
+licenses.
