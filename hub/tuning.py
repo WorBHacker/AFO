@@ -42,7 +42,7 @@ from common.i18n import N_, tr
 from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes, moe_load, quantized_cache
 from common.paths import data_paths
 
-from . import engines, llama_config, model_settings
+from . import engines, llama_config, model_settings, runtimes
 from .db import utc_now
 from .gpu_card import TUNE, GpuCard, Played, Quiet
 
@@ -436,7 +436,7 @@ def tunable(text: str) -> list[str]:
     for model_id in llama_config.model_blocks(text):
         with contextlib.suppress(llama_config.ConfigError):
             view = llama_config.model_view(text, model_id)
-            if view["engine"] == "llama.cpp" and view["editable"]:
+            if runtimes.measured(view):  # 45.1: its engine is measured, its command the window changes
                 out.append(model_id)
     return out
 
@@ -839,7 +839,7 @@ class Tuner:
         path = llama_config.config_path()
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         view = llama_config.model_view(text, model_id)
-        if view["engine"] != "llama.cpp" or not view["editable"]:
+        if not runtimes.measured(view):
             raise TuneError(tr("«{model}» запускается не llama.cpp или её команда записана в одну строку — подбирать "
                                "нечего", model=model_id))  # fmt: skip
         file = Path(view["file"])

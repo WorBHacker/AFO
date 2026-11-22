@@ -5,7 +5,8 @@ lets it. llama.cpp's own behaviour is the one it had before the entry (its tests
 import pytest
 
 from hub import llama_config as lc
-from hub import runtimes
+from hub import model_install as mi
+from hub import runtimes, tuning
 from tests.test_llama_config import CONFIG
 
 MORE = """
@@ -66,3 +67,20 @@ def test_an_engine_put_into_the_entry_is_the_one_the_config_names(monkeypatch):
     assert lc.check_changes({"ttl": 30}, own) == {"ttl": 30}  # its flags are not llama.cpp's: the window keeps off
     with pytest.raises(lc.ConfigError):
         lc.check_changes({"context": 4096}, own)
+
+
+def test_the_tuning_and_the_installer_ask_the_entry_too(monkeypatch):
+    """45.1б: which models are measured, which the installer's checks go over (lost drafts), whose memory is told
+    from the header - the engine's answers, not «llama.cpp» written in each place."""
+    measured = runtimes.Runtime("measured", program="measured-server", flags=True, settings=runtimes.LLAMA_SETTINGS,
+                                measured=True, header=True)  # fmt: skip
+    kept = runtimes.Runtime("kept", program="kept-server", flags=True, settings=("context",))  # changed, not measured
+    monkeypatch.setattr(runtimes, "RUNTIMES", (*runtimes.RUNTIMES, measured, kept))
+    text = CONFIG + "".join(f'\n  "{name}":\n    cmd: |\n      C:/{name}/{name}-server.exe -m F:/models/{name}.gguf\n'
+                            f"      --port ${{PORT}}\n" for name in ("measured", "kept"))  # fmt: skip
+    assert tuning.tunable(text) == ["big", "huge", "measured"]  # Strata's «fast» and «kept» are not measured
+    assert [v["id"] for v in mi._views(text)] == ["big", "huge", "measured", "kept"]
+    views = {m: lc.model_view(text, m) for m in ("measured", "kept")}
+    assert runtimes.estimated(views["measured"]) and not runtimes.estimated(views["kept"])
+    assert not runtimes.drafted(views["measured"])  # it measures, but guesses ahead with no draft of AFO's
+    assert mi._estimated(text, "kept", 16384) is None  # no header read: the window shows no estimate

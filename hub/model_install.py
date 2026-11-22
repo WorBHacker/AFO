@@ -60,7 +60,7 @@ from common.llama_memory import (
 )
 from common.paths import NAME, engines_home, models_home
 
-from . import engines, hf, llama_config, store, visual
+from . import engines, hf, llama_config, runtimes, store, visual
 from .db import utc_now
 from .gpu_card import GIVEN_WORDS, TRIAL, GpuCard, Played, Quiet, named
 from .model_scan import SPLIT, ollama_names
@@ -966,7 +966,7 @@ class Installer:
             return
         text = await asyncio.to_thread(config_text)
         view = llama_config.model_view(text, model_id)
-        if view["engine"] != "llama.cpp" or not view.get("file"):
+        if not runtimes.drafted(view):  # 45.1: its engine guesses ahead with a draft, its file named
             return
         build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
         for entry in await self.drafts_for(Path(view["file"]), build["spec_types"] if build else None):  # 44.4
@@ -2453,7 +2453,7 @@ def _views(text: str) -> list[dict[str, Any]]:
     for model_id in llama_config.model_blocks(text):
         with contextlib.suppress(llama_config.ConfigError):
             view = llama_config.model_view(text, model_id)
-            if view["engine"] == "llama.cpp" and view["editable"]:
+            if runtimes.edits(view):
                 out.append(view)
     return out
 
@@ -2488,7 +2488,7 @@ def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str
     cannot be told - not llama.cpp's, not in the config, its file not read."""
     try:
         view = llama_config.model_view(text, model_id)
-        if view["engine"] != "llama.cpp" or not view.get("file"):
+        if not runtimes.estimated(view):  # 45.1: its engine's file, the header read
             return None
         info = model_info(Path(view["file"]))
         mmproj = Path(view["mmproj"]).stat().st_size if view.get("mmproj") else 0
