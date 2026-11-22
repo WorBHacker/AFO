@@ -472,19 +472,44 @@ Sheet {
                     width: parent.width
                     text: qsTr("Установлена AFO через Strata. Strata подготовит модель заново с этими настройками и проверит запуск; если не запустится — вернёт прежние.")
                 }
-                Repeater {
-                    model: [{ id: "context", name: qsTr("Контекст, токенов") }, { id: "kv", name: qsTr("Память разговора") },
-                            { id: "parallel", name: qsTr("Запросов сразу") }, { id: "drafting", name: qsTr("Угадывание вперёд") }]
-                    delegate: Row {
-                        required property var modelData
-                        spacing: 10
-                        Label { width: 150; text: modelData.name; anchors.verticalCenter: parent.verticalCenter }
-                        Segmented {
-                            objectName: "strata_" + modelData.id
-                            options: ModelSetup.strataChoices[modelData.id] || []
-                            value: ModelSetup.strataDraft[modelData.id] || ""
-                            onPicked: (id) => ModelSetup.setStrata(modelData.id, id)
-                        }
+                Row {
+                    spacing: 10
+                    Label { width: 150; text: qsTr("Контекст, токенов"); anchors.verticalCenter: parent.verticalCenter }
+                    Segmented {
+                        objectName: "strata_context"
+                        options: ModelSetup.strataChoices.context || []
+                        value: ModelSetup.strataDraft.context || ""
+                        onPicked: (id) => ModelSetup.setStrata("context", id)
+                    }
+                }
+                Row {
+                    spacing: 10
+                    Label { width: 150; text: qsTr("Память разговора"); anchors.verticalCenter: parent.verticalCenter }
+                    Segmented {
+                        objectName: "strata_kv"
+                        options: ModelSetup.strataChoices.kv || []
+                        value: ModelSetup.strataDraft.kv || ""
+                        onPicked: (id) => ModelSetup.setStrata("kv", id)
+                    }
+                }
+                Row {
+                    spacing: 10
+                    Label { width: 150; text: qsTr("Запросов сразу"); anchors.verticalCenter: parent.verticalCenter }
+                    Segmented {
+                        objectName: "strata_parallel"
+                        options: ModelSetup.strataChoices.parallel || []
+                        value: ModelSetup.strataDraft.parallel || ""
+                        onPicked: (id) => ModelSetup.setStrata("parallel", id)
+                    }
+                }
+                Row {
+                    spacing: 10
+                    Label { width: 150; text: qsTr("Угадывание вперёд"); anchors.verticalCenter: parent.verticalCenter }
+                    Segmented {
+                        objectName: "strata_drafting"
+                        options: ModelSetup.strataChoices.drafting || []
+                        value: ModelSetup.strataDraft.drafting || ""
+                        onPicked: (id) => ModelSetup.setStrata("drafting", id)
                     }
                 }
                 PlainButton {

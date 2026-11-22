@@ -10759,6 +10759,13 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
                 hard = [i for i in texts_and_fields(body) if i.property("placeholderText") == "нет"][-1]
                 hard.setProperty("text", "5")  # «После лимита» shows with a limit
             go(body)
+            if kind == "ModelsSheet":  # 45.1в: a model of AFO's own Strata - its settings are switches too
+                client.llama_extra = [OWN_STRATA]
+                app._set_models([*MODELS, {"id": "llama-swap/flash", "model_ref": "flash", "name": "Flash",
+                                           "locality": "local", "provider": "llama-swap", "prices": {}}])  # fmt: skip
+                app.model_setup.open("llama-swap/flash")
+                wait_until(lambda: not app.bg.busy and app.model_setup.launch.get("strata"))
+                go(body)
             if kind == "InstallSheet":
                 app.install_view.setTab("search")
                 click(window, item_named(body, "installMoreFilters"))  # «▸ Ещё фильтры»: a link
