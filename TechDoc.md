@@ -1265,6 +1265,64 @@
   и угадыванием вперёд: MTP, DFlash2), как AFO её ставит и запускает, лицензия MIT, благодарность Niko1221 со ссылкой
   на `github.com/Niko1221/Strata`. Политику подписи кода не трогать: её проверяют тесты.
 
+Начат 2026-11-22 (слово пользователя «Начни 45»; после выпуска 0.1.18.1 — «Да начни» без ответов на вопросы: взяты
+советы — Flash-Next через Strata только её собственные наборы (ISTA-DASLab Q2_0…IQ3_S, Coder), обычный файл
+Flash-Next — llama.cpp, как сейчас (b11899 знает `qwen4exp`); Qwen3.6-35B-A3B через Strata — не в этом этапе, потом
+отдельным замером против llama.cpp; проба — «Да загружай»).
+
+- 45.1а сделан (`2d0063c`): `hub/runtimes.py` — общий вход. Чей запуск (слово `llama-server` — llama.cpp, `sd-server`
+  или строка `engine: stable-diffusion.cpp` — картинки, слово `serve` — Strata, иначе «другой»; порядок и слова —
+  прежние из `model_view`), что окно меняет (ttl; у llama.cpp с командой на своих строках — прежний набор
+  `check_changes`), мерит ли подбор, читается ли заголовок файла, качаются ли черновые модели, читается ли шаблон
+  чата. `llama_config` спрашивает его в `model_view`, `check_changes`, `_llama_views`, `match_build`, `efforts_now`,
+  `server_command`. Имена флагов llama.cpp остаются в `llama_config.FLAGS`.
+- 45.1б сделан (`4652e17`): `tuning.tunable`, `_tune_bench` — `runtimes.measured`; `model_install._views` —
+  `runtimes.edits`, `_fetch_draft` — `runtimes.drafted`, `_estimated` — `runtimes.estimated`. Слова «llama.cpp» в
+  этих местах больше нет. Поведение прежнее: `test_llama_config` (21), `test_model_install` и `test_tuning` (96)
+  без правок прошли с `tests/test_runtimes.py` (4); его тесты (движок, добавленный во вход, — тот, что называют
+  окно, подбор и установка) падают на старом коде.
+- 45.0 проба (2026-11-22, стенд `D:\AFO-stand48\strata45`, кода AFO нет; сценарии — в папке сессии `probe45\`):
+  - Выпуск `v0.2.18`: программа — `strata-control-0.1.64-windows-x86_64.zip` (67 675 044 Б, sha256 `dce4ccae…5f10`,
+    свой Python 3.12.15, `strata --version` — «0.2.18 (build 0.1.64)»), движок —
+    `strata-engine-0.1.64-windows-x86_64-cuda-cuda13.tar.gz` (487 584 992 Б, `da28bc55…c288`). Обе суммы — и в
+    `digest` GitHub, и в `SHA256SUMS.txt`. Подписанная лента `strata-feed.json` (последовательность 130, ключ
+    `5d1bc23abbeffd0d` — встроенный) называет архив движка без адреса: папка с лентой, её `.sig` и архивом —
+    тоже лента. `strata update --no-control --yes --feed <папка>` ставит движок из неё: проверяет подпись и каждый
+    файл, пробно запускает `--version` (модели ещё нет) и только тогда переключается. Значит, AFO качает сам (своя
+    проверка sha256, ход загрузки в окне), а ставит Strata.
+  - Свои папки: Strata берёт их из `LOCALAPPDATA` (состояние: `launch\`, `procs\`), `APPDATA` (`settings.json`,
+    `profiles`, `presets`, запомненные установки — её `places` найдёт и установку человека), `USERPROFILE` и
+    `STRATA_DATA_DIR`, `STRATA_INSTALL_DIR`, `STRATA_COMPONENTS_DIR`, `STRATA_PROFILE_DIR`, `STRATA_PRESET_DIR`,
+    `STRATA_RUNTIME_DIR`, `STRATA_SETTINGS_FILE`, `STRATA_NO_PATH`. С ними всеми на стенде папки человека
+    (`%LOCALAPPDATA%\Strata`, `%APPDATA%\Strata`, `D:\AI model\Strata`, `E:\HeaviyMetal\Strata`) после установки,
+    подготовки и запуска — те же файлы, что до пробы (списки с размером и временем совпали).
+  - Опасность, найденная пробой: каждый запуск `strata.py` 0.2.16+ переименовывает `strata.ps1` в
+    `strata-direct.ps1` в каждой папке PATH, где рядом лежит `strata.cmd` (`strata_cli/launcher_heal.py`). Первый
+    же `strata --help` стенда так изменил Strata 0.1.51 человека (и записал рядом `launcher-heal.log`); возвращено
+    сразу, список файлов совпал. Своей Strata AFO даёт PATH без папок со `strata.cmd`.
+  - `launch --plan --output json` ничего не меняет и даёт: имя профиля, модель с размером (`model_gb`), что
+    докачать (`download.parts`: слой MTP 5,2 ГБ — если нет `<data>/mtp/rt/experts.bin`; DFlash2 1,2 ГБ), предупреждения.
+    «Поместится ли» он не говорит: UD-Q4_K_XL на 111 ГБ при 64 ГБ ОЗУ — только «may run slower», не отказ. Свои
+    файлы — `--model-path` (папка частей), MTP человека — `--data-dir` с ним внутри: «Nothing to download».
+  - Подготовить без запуска командой нельзя: `--no-tui --yes` запускает модель. Но `Runner.run(start=False)` самой
+    Strata делает шаги engine, model, config, tune и пишет профиль без загрузки модели: сценарий в 20 строк на её же
+    Python (`-I -X utf8`) записал `launch\iq1_m-64k.json` и `profiles\launch-iq1_m-64k.json`, видеокарта не
+    тронута (13 412 МиБ до и после — чужая Gemma). Один раз собран набор `<data>\packs\coder-iq1_m` (1,5 ГБ). В
+    профиле — пути версии (`--expert-profile …\terminal\0.1.64\data\…`): после обновления Strata профиль готовится
+    заново. `serve --profile … --plan --output json` проверяет его, не запуская.
+  - Под llama-swap стенда (v267, `127.0.0.1:8812`) команда как у человека: `${strata_py} ${strata_cli} serve
+    --profile … --host 127.0.0.1 --port ${PORT}`, `checkEndpoint: /health`. Coder IQ1_M (файлы человека жёсткими
+    ссылками): первый вопрос с загрузкой — 66,7 с, ответ «391» верный (3,7 т/с: эксперты ещё с диска), второй — 0,7 с,
+    113,5 т/с (MTP: 41 из 56 угаданных), после выгрузки и нового запуска — 36,6 с, 118,8 т/с. Карта — до 15 861 из
+    16 303 МиБ: Strata занимает её почти всю (кэш экспертов «auto») — на время её работы очередь видеокарты держится
+    целиком; ОЗУ — 30 ГБ (`strata.exe` 32 ГБ RSS). Цепочка: python → `strata.exe` → помощники. «Выгрузить»
+    (`/api/models/unload/<id>`) — 200, вся цепочка модели закрылась, карта — 494 МиБ. Убитый llama-swap: цепочка
+    Strata закрылась сама за 2,0 с, процессов стенда не осталось.
+  - Что из этого меняет план: 45.2а — загрузка AFO + `update --feed <папка>` Strata, PATH без чужих Strata, все
+    папки выше; 45.2в — профиль через `Runner.run(start=False)` (команды для этого у Strata нет), затем запись в
+    `config.yaml`, пробный запуск — через очередь видеокарты; настройки Strata (контекст, KV, параллельность,
+    угадывание) меняются заново подготовленным профилем, не флагами команды (45.1в).
+
 ### Этап 46. KTransformers через WSL — по согласию человека (закрыт замером 46.1)
 
 KTransformers (`kvcache-ai/ktransformers`, Apache-2.0) держит экспертов MoE в ОЗУ и считает их процессором, видеокарта —
