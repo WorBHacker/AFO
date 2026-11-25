@@ -541,3 +541,29 @@ def test_a_strata_models_settings_are_prepared_again_and_the_earlier_come_back_i
 
     assert hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"kv": "q9"}}).status_code == 422
     assert hub.put("/v1/install/strata/big", json={"changes": {"kv": "q4_0"}}).status_code == 404
+
+
+def test_new_settings_are_tried_once_llama_swap_has_read_them_and_an_empty_answer_is_no_trial(
+        github, hub, small_models, monkeypatch, tmp_path):  # noqa: F811  # fmt: skip
+    """45.5, found on the stand: other settings of a Strata model were tried while llama-swap still served the file it
+    had read before - the same name listed, the question meeting the old Strata shutting down («group is shutting
+    down»): the new settings were taken for ones that do not start and the earlier came back, never tried. The trial
+    waits until llama-swap passes on the new block's own metadata. And an answer that broke off before a word (the
+    stand's Strata beside another program's model) made the install «done» at 0 tokens a second: it is no answer."""
+    a_computer(monkeypatch, tmp_path)
+    put_in()
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    model_id = wait_for(hub, job["id"], "done", "failed", timeout=60.0)["model_id"]
+    monkeypatch.setattr(FakeLlamaSwap, "reread_s", 1.5)  # --watch-config's look, the old Strata ending
+    hub.put(f"/v1/install/strata/{model_id}", json={"changes": {"kv": "q4_0", "context": 131072}})
+    time.sleep(0.2)
+    done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
+    assert done["status"] == "done" and not done["error"], done["error"]
+    assert (done["plan"]["kv"], done["plan"]["context"]) == ("q4_0", 131072)
+
+    monkeypatch.setattr(FakeLlamaSwap, "reread_s", 0.0)
+    hub.delete(f"/v1/install/models/{model_id}")
+    monkeypatch.setattr(FakeLlamaSwap, "broken", True)
+    job = hub.post("/v1/install/strata", json={"id": CODER}).json()["job"]
+    failed = wait_for(hub, job["id"], "failed", "done", timeout=60.0)
+    assert failed["status"] == "failed" and "модель ничего не ответила — ответ оборвался" in failed["error"]

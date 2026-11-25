@@ -2787,6 +2787,7 @@
  "модель не нашла, что менять в карточке": "the model found nothing to change in the card",
  "модель не ответила за 2 минуты": "the model did not answer within 2 minutes",
  "модель недоступна": "the model is unavailable",
+ "модель ничего не ответила — ответ оборвался": "the model answered nothing - the answer broke off",
  "модель нового профиля агента": "the model of a new agent profile",
  "модель нового чата": "a new chat's model",
  "модель роли «Проверка цели»": "the model of the “Goal check” role",

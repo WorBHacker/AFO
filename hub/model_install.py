@@ -104,6 +104,8 @@ RESERVE_SETTING = "install.reserve"
 DEFAULT_RESERVE = {"vram_gib": RESERVE_GIB, "ram_gib": RAM_RESERVE_GIB}
 RESERVE_BOUNDS = {"vram_gib": (0.0, 8.0), "ram_gib": (0.0, 32.0)}
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
+# (45.5) llama-swap rereads a Strata model's block only once the Strata running it has ended - its chain takes seconds
+STRATA_RELOAD_S = 60.0
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
 CLOSED_TTL_S = 60.0  # «closed to this token» believed this long - the person may accept the terms meanwhile
@@ -2593,7 +2595,11 @@ class Installer:
             )
             new = llama_config.add_model(text, model_id, block)
             backup = await asyncio.to_thread(llama_config.write, path, new)
-            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            # (45.5) the same name written anew (other settings, the earlier ones back): llama-swap lists it before it
+            # has read the file too - it has read it once it passes on this block's own metadata
+            expected = {"context": plan["context"], **{k: chosen.get(k) for k in ("kv", "parallel", "drafting")}}
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)),
+                                                      meta=(model_id, expected), timeout_s=STRATA_RELOAD_S)  # fmt: skip
             if not ok and problem != tr(llama_config.NOT_ANSWERING):
                 await asyncio.to_thread(llama_config.restore, path, backup)
                 raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",

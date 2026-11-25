@@ -175,7 +175,11 @@ async def run_check(state: Any, model: dict[str, Any], client: Client) -> dict:
     for kind, budget in await state.db.acall(record):
         await state.bus.publish(f"budget.{kind}", {"model_id": model["id"], "budget": budget})
     stats = (end.stats if end else None) or {}
-    return {"ok": not (end and end.refusal), "text": "".join(text).strip() or (end.refusal if end else "") or "",
+    said = "".join(text).strip()
+    if not said and not (end and end.refusal):  # (45.5) a stream that broke off before a word - not an answer
+        return {"ok": False, "error": tr("модель ничего не ответила — ответ оборвался"),
+                "seconds": round(time.monotonic() - started, 1)}  # fmt: skip
+    return {"ok": not (end and end.refusal), "text": said or (end.refusal if end else "") or "",
             "seconds": round(time.monotonic() - started, 1), "ttft_s": stats.get("ttft_s"),
             "tok_s": stats.get("tok_s"), "output_tokens": usage.get("output_tokens", 0), "cost_usd": cost,
             "params": params}  # fmt: skip

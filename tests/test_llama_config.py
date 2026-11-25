@@ -8,6 +8,7 @@ import contextlib
 import json
 import os
 import random
+import re
 import struct
 import sys
 import threading
@@ -337,9 +338,27 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     answering: ClassVar = None  # a chat's answer (48's review): it comes once this Event is set
     unloaded: ClassVar[list] = []  # the unloads asked for (48.9г): /api/models/unload, or …/unload/<model>
     listed: ClassVar[list] = []  # the models named at each look at /v1/models (52.7): what the hub saw of a reload
+    # (45.5) the file read only this long after it changed, as --watch-config polls and a running Strata ends first:
+    # meanwhile the file read before is served, and a question meets the old group shutting down - 500
+    reread_s: ClassVar[float] = 0.0
+    read: ClassVar = None  # (the text served, since when the file differs from it)
+    broken: ClassVar = False  # (45.5) an answer that breaks off before a word: 200, the stream ends with nothing
 
     def log_message(self, *args):
         pass
+
+    def _text(self) -> str:
+        now = self.config.read_text(encoding="utf-8")
+        served, since = FakeLlamaSwap.read or (now, None)
+        if served != now and since is None:
+            since = time.monotonic()
+        if served != now and time.monotonic() - since >= self.reread_s:
+            served, since = now, None
+        FakeLlamaSwap.read = (served, since)
+        return served
+
+    def _rereading(self) -> bool:
+        return self.reread_s > 0 and self._text() != self.config.read_text(encoding="utf-8")
 
     def _stream_log(self, model_id):
         """llama-swap's log of a model: what it kept comes at once, then the stream waits for more."""
@@ -371,13 +390,20 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             self._send(200, {"id": "job_v", "status": "completed", "result": {
                 "b64_json": base64.b64encode(WEBP).decode(), "frame_count": 9, "fps": 24}})  # fmt: skip
             return
-        text = self.frozen or self.config.read_text(encoding="utf-8")
+        text = self.frozen or self._text()
         data = []
-        for model_id in lc.model_blocks(text):
+        lines = text.splitlines()
+        for model_id, (start, end) in lc.model_blocks(text).items():
             view = lc.model_view(text, model_id)
             meta = {"context": view.get("context") or 65536}
             if view["engine"] == lc.SD_ENGINE:  # what the config's metadata says, as llama-swap passes it on
                 meta = {"engine": lc.SD_ENGINE}
+            if view["engine"] == "strata":  # (45.5) a Strata block's metadata, all of it, as llama-swap passes it on
+                block = lines[start:end]
+                at = next((i for i, line in enumerate(block) if line.strip() == "metadata:"), len(block))
+                meta = {m.group(1): m.group(2).strip("\"'") for line in block[at + 1:]
+                        if (m := re.match(r"^\s{6}(\w+):\s*(.+?)\s*$", line))}  # fmt: skip
+                meta["context"] = int(meta["context"])
             data.append({"id": model_id, "name": view["name"], "meta": {"llamaswap": meta}})
         FakeLlamaSwap.listed.append([m["id"] for m in data])
         self._send(200, {"data": data})
@@ -411,6 +437,13 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             if self.fail:  # it did not start after all, while the answer was held (48.9б4: a game took the memory)
                 self._send(502, {"error": "upstream command exited prematurely"})
                 return
+        if self._rereading():  # (45.5) the real one's words, 2026-11-25 on the stand
+            self._send(500, {"src": "llama-swap", "error": {"message": "unspecific error: group is shutting down",
+                                                            "code": "internal_error"}})  # fmt: skip
+            return
+        if self.broken:  # (45.5) the stand's Strata beside another program's model: «recovered from upstream
+            self._send(200, b"", "text/event-stream")  # disconnection during streaming» - and nothing came
+            return
         chunks = [
             *({"choices": [{"delta": {"reasoning_content": piece}}]} for piece in self.banner),
             {"choices": [{"delta": {"content": "на связи"}}]},

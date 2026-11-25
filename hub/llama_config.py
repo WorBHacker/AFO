@@ -919,9 +919,13 @@ async def model_efforts(path: Path | None = None) -> dict[str, list[str]]:
 
 
 async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,
-                   timeout_s: float | None = None, gone: list[str] | None = None) -> tuple[bool, str]:  # fmt: skip
+                   timeout_s: float | None = None, gone: list[str] | None = None,
+                   meta: tuple[str, dict[str, Any]] | None = None) -> tuple[bool, str]:  # fmt: skip
     """Whether llama-swap read the file: it lists every model again (and the new context, when that changed) - and
-    none of `gone`, the models taken out of the file (52.7): the one sign of a reread when no model is new."""
+    none of `gone`, the models taken out of the file (52.7): the one sign of a reread when no model is new. `meta`
+    (45.5): a block written anew under the same name - its metadata as llama-swap passes it on (meta.llamaswap), each
+    value as written, None - not there: until then llama-swap answers from the file it read before, and a question
+    meets the old model shutting down («group is shutting down»)."""
     url = f"{base_url.rstrip('/')}/v1/models"
     deadline = time.monotonic() + (timeout_s or RELOAD_S)
     seen = ""
@@ -936,7 +940,10 @@ async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | Non
                 said = context and ((listed.get(context[0]) or {}).get("meta") or {}).get("llamaswap", {}).get(
                     "context")  # fmt: skip
                 still = [m for m in gone or [] if m in listed]
-                if not missing and not still and (context is None or said == context[1]):
+                shown = (((listed.get(meta[0]) or {}).get("meta") or {}).get("llamaswap") or {}) if meta else {}
+                fresh = meta is None or all(shown.get(k) is None if v is None else str(shown.get(k)) == str(v)
+                                            for k, v in meta[1].items())  # fmt: skip
+                if not missing and not still and (context is None or said == context[1]) and fresh:
                     return True, ""
                 seen = tr("llama-swap не видит: {models}", models=", ".join(missing)) if missing else \
                     tr("llama-swap ещё не перечитал файл")  # fmt: skip
