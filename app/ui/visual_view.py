@@ -957,6 +957,50 @@ class VisualView(QObject):
             self.app._call(lambda: self.app.client.visual_cancel(job_id), lambda _r: None, lambda _e: None)
 
     @Slot(str)
+    def remove(self, job_id: str) -> None:
+        """«Удалить» (2026-11-25): the picture or video shown ("") - or one of the latest, by its ✕ - deleted for good,
+        asked first. The video shown is let go before the hub deletes it: Windows keeps a file being played. What the
+        hub refuses - a film's scene, one going on - is said, and it is shown again."""
+        job_id = job_id or self._job.get("id", "")
+        found = next((j for j in self._recent if j["id"] == job_id), None)
+        if found is None and self._job.get("id") == job_id:
+            found = self._job
+        if not job_id or found is None or self.app.client is None:
+            return
+        title = tr("Удалить видео?") if found.get("kind") == "video" else tr("Удалить картинку?")
+
+        def decide(yes: bool | None) -> None:
+            if not yes:
+                return
+            shown = self._job.get("id") == job_id
+            if shown:  # the player lets its file go
+                self._job = {}
+                self.changed.emit()
+
+            def failed(error: Any) -> None:
+                if shown and not self._job and any(j["id"] == job_id for j in self._recent):
+                    self._job = found
+                    self.changed.emit()
+                self.app.show_error(tr("Не удалено: {error}", error=error))
+
+            self.app._call(lambda: self.app.client.visual_delete(job_id), lambda _r: self._forget(job_id), failed)
+
+        self.app._ask(title, tr("Файл удалится с диска — вернуть его будет нельзя."), tr("Удалить"), decide)
+
+    def _forget(self, job_id: str) -> None:
+        """A job deleted (2026-11-25: here, or `visual.deleted` from the hub): out of the latest, the frame and what
+        the window kept of it."""
+        self._recent = [j for j in self._recent if j["id"] != job_id]
+        self.provider.pictures.pop(job_id, None)
+        self._progress.pop(job_id, None)
+        self._clock.pop(job_id, None)
+        self._making.discard(job_id)
+        self._unplayable.pop(job_id, None)
+        if self._job.get("id") == job_id:
+            self._job = {}
+        self.changed.emit()
+
+    @Slot(str)
     def setGallery(self, kind: str) -> None:
         self._gallery = kind if kind in {k for k, _n in GALLERY} else "all"
         self.changed.emit()
@@ -1017,6 +1061,9 @@ class VisualView(QObject):
     # ================= the hub's events =================
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "visual.deleted":  # (2026-11-25) here or in another window
+            self._forget(str(payload.get("id") or ""))
+            return
         if kind == "visual.progress":
             step = (int(payload.get("step") or 0), int(payload.get("steps") or 0))
             self._progress[str(payload.get("id") or "")] = step  # the queue's (48.7в)

@@ -467,6 +467,75 @@ def test_stop_unloads_the_model_and_the_picture_ends(hub):
     assert hub.get(f"/v1/visual/jobs/{job['id']}/file").status_code == 404
 
 
+def test_a_picture_deleted_with_its_own_files_and_what_must_stay_refused(hub):
+    """(The user's word, 2026-11-25) the Studio's «Удалить»: the job's own files and its row go, another job's file and
+    a film's photo stay; refused in words - a job going on, a film scene's clip (its latest, its clip with the lips
+    made), the source of an improvement going on, a file Windows holds past the retries; one let go within them goes."""
+    _install(hub)
+    media = data_paths().media
+    posted = [hub.post("/v1/visual/images", json={"prompt": f"a fox {n}", "seed": n}).json()["job"] for n in (1, 2, 3)]
+    first, second, third = (_wait(hub, j["id"], "done", "failed") for j in posted)
+    assert [j["status"] for j in (first, second, third)] == ["done"] * 3
+    folder = (media / first["file"]).parent
+    for name in (f"{first['id']}.jpg", f"{first['id']}-source.png", f"voice-{first['id']}.wav", "film-f1-photo.png"):
+        (folder / name).write_bytes(b"x")
+
+    gone = hub.delete(f"/v1/visual/jobs/{first['id']}")
+    assert gone.status_code == 200 and gone.json() == {"deleted": first["id"]}
+    assert not list(folder.glob(f"*{first['id']}*")), "its own files"
+    assert (folder / "film-f1-photo.png").is_file() and (media / second["file"]).is_file()
+    assert hub.get(f"/v1/visual/jobs/{first['id']}").status_code == 404
+    assert hub.delete(f"/v1/visual/jobs/{first['id']}").status_code == 404
+    assert ("visual.deleted", {"id": first["id"]}) in hub.seen
+
+    idea = "Лампа на столе, что светит ночью всем, кто не спит до утра"
+    lips = json.dumps({"job": third["id"], "key": "k"})
+    hub.app.state.db.call(lambda conn: (
+        conn.execute("INSERT INTO films (id, idea, seconds) VALUES ('f1', ?, 10)", (idea,)),
+        conn.execute("INSERT INTO film_scenes (film_id, n, mode, prompt, frames, job_id, status) VALUES "
+                     "('f1', 1, 'text', 'a lamp', 33, ?, 'done')", (second["id"],)),
+        conn.execute("INSERT INTO film_scenes (film_id, n, mode, prompt, frames, lips) VALUES "
+                     "('f1', 2, 'text', 'a lamp', 33, ?)", (lips,))))  # fmt: skip
+    for scene in (second, third):
+        refused = hub.delete(f"/v1/visual/jobs/{scene['id']}")
+        assert refused.status_code == 409 and refused.json()["detail"] == (
+            "это сцена фильма «Лампа на столе, что светит ночью всем,…» — удалите фильм или переснимите сцену в "
+            "«Режиссёре»")  # fmt: skip
+        assert (media / scene["file"]).is_file()
+    hub.app.state.db.call(lambda conn: (conn.execute("DELETE FROM film_scenes"), conn.execute("DELETE FROM films")))
+    assert hub.delete(f"/v1/visual/jobs/{third['id']}").status_code == 200  # no film's now
+
+    improves = json.dumps({"job": second["id"]})  # an improvement of the second, as if going on
+    hub.app.state.db.call(lambda conn: conn.execute(
+        "INSERT INTO visual_jobs (id, kind, prompt, model_id, width, height, seed, status, enhance) VALUES "
+        "('e1', 'video', '', 'enhance', 512, 512, 0, 'running', ?)", (improves,)))  # fmt: skip
+    refused = hub.delete(f"/v1/visual/jobs/{second['id']}")
+    assert refused.status_code == 409 and "«Улучшить…» — дождитесь или отмените" in refused.json()["detail"]
+    hub.app.state.db.call(lambda conn: conn.execute("UPDATE visual_jobs SET status = 'done' WHERE id = 'e1'"))
+
+    FakeDrawSwap.steps_s = 0.5  # a long picture: refused while it waits and while it is drawn; cancelled - it goes
+    going = hub.post("/v1/visual/images", json={"prompt": "a long fox", "seed": 4}).json()["job"]
+    for _ in ("queued", "running"):
+        refused = hub.delete(f"/v1/visual/jobs/{going['id']}")
+        assert refused.status_code == 409 and refused.json()["detail"] == "это ещё делается — сначала отмените (✕)"
+        _wait(hub, going["id"], "running")
+    hub.post(f"/v1/visual/jobs/{going['id']}/cancel")
+    _wait(hub, going["id"], "cancelled", "failed", "done", timeout=5.0)
+    assert hub.delete(f"/v1/visual/jobs/{going['id']}").status_code == 200
+
+    path = media / second["file"]
+    with path.open("rb"):  # another program holds it all the while the hub tries (Windows: no deleting an open file)
+        held = hub.delete(f"/v1/visual/jobs/{second['id']}")
+    assert held.status_code == 409
+    assert held.json()["detail"] == f"файл занят другой программой — закройте её и удалите снова: {path.name}"
+    assert hub.get(f"/v1/visual/jobs/{second['id']}").status_code == 200 and path.is_file()
+    handle = path.open("rb")  # the window's player letting it go a moment later
+    threading.Timer(0.4, handle.close).start()
+    assert hub.delete(f"/v1/visual/jobs/{second['id']}").status_code == 200 and not path.exists()
+    assert [p["id"] for k, p in hub.seen if k == "visual.deleted"] == [first["id"], third["id"], going["id"],
+                                                                        second["id"]]  # fmt: skip
+
+
 def _taken_not_running(hub, monkeypatch):
     """The worker held where it has taken a job from the queue and not yet said «running» - its model not asked for: a
     picture at its look at the computer, a video at its look for the model's files. `at` - it is there; `go` - on."""

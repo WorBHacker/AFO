@@ -726,6 +726,20 @@ class FakeClient:
     def visual_job(self, job_id):
         return {"job": next(j for j in self.visual_jobs_list if j["id"] == job_id)}
 
+    def visual_delete(self, job_id):
+        """As the hub deletes (2026-11-25): a film's scene (`scene_of` here) refused in its words; else the job's own
+        files - by the hub's own functions, the window's data folder's real files - and it is gone from the list."""
+        from hub import visual as hv
+
+        self.visual_calls.append(("delete", job_id))
+        found = next(j for j in self.visual_jobs_list if j["id"] == job_id)
+        if found.get("scene_of"):
+            film = found["scene_of"]
+            raise HubError(f"это сцена фильма «{film}» — удалите фильм или переснимите сцену в «Режиссёре»")
+        hv.unlink_all(hv.own_files(data_paths().media, found))
+        self.visual_jobs_list.remove(found)
+        return {"deleted": job_id}
+
     def visual_improve(self, spec):
         self.visual_calls.append(("improve", spec))
         how = {"source": "2026-11/x.mp4", "job": spec.get("from_job", ""), "fps": 24, "size": spec["size"],
@@ -8219,6 +8233,101 @@ def test_the_studios_queue_and_gallery(qapp):
         assert view.recent == []
         view.setGallery("image")
         assert [r["id"] for r in view.recent] == [first["id"]]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_picture_and_a_video_are_deleted_from_the_studio_by_clicks(qapp):
+    """2026-11-25 (the user's word): «Удалить» under the picture or video shown, ✕ on a thumbnail of «Последние» - asked
+    first («Отмена» deletes nothing), then the job's files are gone from the disk and it from the lists. The video
+    shown is let go first: Windows keeps a file the player plays - here a real MP4 played, deleted by the hub's own
+    functions. A film's scene refused: the hub's words said, the video shown again. Real QML, mouse clicks."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QObject, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        month = app.paths.media / "2026-11"
+        month.mkdir(parents=True, exist_ok=True)
+        for name in ("q1", "s1"):  # a video with its MP4 beside, as the hub leaves one
+            (month / f"{name}.webp").write_bytes(animated_clip(COLOURS[:4]))
+            ffmpeg.to_mp4(program, month / f"{name}.webp", month / f"{name}.mp4")
+        (month / "p1.png").write_bytes(PICTURE)
+        (month / "p1-source.png").write_bytes(PICTURE)  # «По картинке»: its source beside it
+        (month / "film-f1-photo.png").write_bytes(PICTURE)  # another's: stays
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        video = {"kind": "video", "model_id": "ltx", "status": "done", "seconds": 64.0, "width": 64, "height": 64,
+                 "frames": 4, "fps": 24, "seed": 1, "error": ""}  # fmt: skip
+        client.visual_jobs_list = [
+            {**video, "id": "q1", "prompt": "дождь на улице", "file": "2026-11/q1.webp"},
+            {**video, "id": "s1", "prompt": "лампа", "file": "2026-11/s1.webp", "scene_of": "Лампа на столе"},
+            {"id": "p1", "kind": "image", "prompt": "рыжая лиса", "model_id": "flux2-klein-4b", "status": "done",
+             "width": 512, "height": 512, "seed": 7, "error": "", "seconds": 3.0, "file": "2026-11/p1.png",
+             "source": "2026-11/p1-source.png"},
+        ]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded and len(view.recent) == 3)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        player = item_named(studio, "visualVideo")
+        view.pick("q1")
+        wait_until(lambda: view.videoFile.endswith("/q1.webp") and player.property("seekable"), 10)  # it plays
+
+        click(window, item_named(studio, "visualDelete"))  # «Удалить» under the video shown
+        wait_until(lambda: app.question.get("title") == "Удалить видео?")
+        assert app.question["text"] == "Файл удалится с диска — вернуть его будет нельзя."
+        app.answer(False)  # «Отмена»
+        for _ in range(5):
+            QApplication.processEvents()
+        assert ("delete", "q1") not in client.visual_calls and (month / "q1.mp4").exists()
+        click(window, item_named(studio, "visualDelete"))
+        wait_until(lambda: app.question.get("title") == "Удалить видео?")
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and ("delete", "q1") in client.visual_calls, 10)
+        assert not any(month.glob("q1*")), "the video's files stay"  # the player let its MP4 go
+        assert [r["id"] for r in view.recent] == ["s1", "p1"] and view.videoFile == "" and not view.done
+
+        thumb = item_named(studio, "visualDelete_p1")  # ✕ on a thumbnail: seen with the mouse over it
+        assert not thumb.property("visible")
+        window.grabWindow()
+        middle = thumb.parentItem().mapToScene(QPointF(thumb.parentItem().width() / 2, 60))
+        QTest.mouseMove(window, QPoint(int(middle.x()), int(middle.y())))
+        wait_until(lambda: thumb.property("visible"))
+        click(window, thumb)
+        wait_until(lambda: app.question.get("title") == "Удалить картинку?")
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and ("delete", "p1") in client.visual_calls)
+        assert not any(month.glob("p1*")) and (month / "film-f1-photo.png").exists()
+        assert [r["id"] for r in view.recent] == ["s1"]
+
+        view.pick("s1")  # a film's scene: the hub refuses, says why; shown again
+        wait_until(lambda: view.videoFile.endswith("/s1.webp") and player.property("seekable"), 10)
+        click(window, item_named(studio, "visualDelete"))
+        wait_until(lambda: app.question.get("title") == "Удалить видео?")
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and "Не удалено: это сцена фильма «Лампа на столе»" in app.flashText, 10)
+        assert view.videoFile.endswith("/s1.webp") and (month / "s1.mp4").exists()
+        app.on_event({"type": "visual.deleted", "payload": {"id": "s1"}})  # the hub's word: deleted elsewhere
+        assert view.recent == [] and view.videoFile == ""
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

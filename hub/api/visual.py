@@ -1,13 +1,14 @@
 """/v1/visual - pictures (D55, stage 29.4; hub/visual.py). The desktop app's, like the installs of picture models.
 
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
-asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
+asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»; DELETE
+/jobs/<id> - deleted for good, with its files (2026-11-25);
 POST /videos - a video (29.8а, Wan2.2; a job like a picture's); POST /improve - «Улучшить ролик» (54.5): a video
 of the Studio's or a film's improved, a job too; GET /jobs/<id>/file - the picture itself (PNG; a
 video - WebP); GET /improve/frame - (56) a frame of the video to be improved, to click the object on; GET
 /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg; 48.12: the window plays it); GET
 /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6: a model drew it), /pictures/<sha256>/mp4 - a chat's
-video as MP4 (48.12). Events: visual.changed (a job), visual.progress (step and preview).
+video as MP4 (48.12). Events: visual.changed (a job), visual.progress (step and preview), visual.deleted ({id}).
 """
 
 from __future__ import annotations
@@ -204,6 +205,17 @@ async def cancel(request: Request, job_id: str, client: Annotated[Client, Depend
         return {"job": await _visual(request).cancel(job_id)}
     except v.VisualError as exc:
         raise _refusal(exc) from exc
+
+
+@router.delete("/jobs/{job_id}")
+async def remove(request: Request, job_id: str, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """A picture or a video deleted for good (2026-11-25): its files and its row - not one going on, not a film's
+    scene's clip, not the source of an improvement going on (409, in words)."""
+    try:
+        await _visual(request).remove(job_id)
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+    return {"deleted": job_id}
 
 
 @router.get("/jobs/{job_id}/file")

@@ -506,6 +506,12 @@ Item {
                 text: qsTr("Папка с картинками")
                 onClicked: Visual.openFolder()
             }
+            PlainButton {  // (2026-11-25) for good, asked first
+                objectName: "visualDelete"
+                iconName: "trash"
+                text: qsTr("Удалить")
+                onClicked: Visual.remove("")
+            }
         }
         // 48.7в: the jobs going on - each how far it is, ✕ to cancel
         ListView {
@@ -644,6 +650,17 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: Visual.pick(thumb.modelData.id)
+                    }
+                    HoverHandler { id: thumbHover }  // the mouse over the thumbnail or its ✕
+                    IconButton {  // (2026-11-25) deleted for good, asked first
+                        objectName: "visualDelete_" + thumb.modelData.id
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 3
+                        visible: thumbHover.hovered
+                        iconName: "close"
+                        tip: qsTr("Удалить")
+                        onClicked: Visual.remove(thumb.modelData.id)
                     }
                     ToolTip.visible: thumbMouse.containsMouse
                     ToolTip.delay: 600

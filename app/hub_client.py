@@ -222,6 +222,10 @@ class HubClient:
     def visual_cancel(self, job_id: str) -> dict:
         return self._call("POST", f"/v1/visual/jobs/{job_id}/cancel")
 
+    def visual_delete(self, job_id: str) -> dict:
+        """A picture or a video of the Studio deleted for good, with its files (2026-11-25)."""
+        return self._call("DELETE", f"/v1/visual/jobs/{job_id}")
+
     def visual_file(self, job_id: str) -> bytes:
         """A picture's PNG."""
         return self._raw("GET", f"/v1/visual/jobs/{job_id}/file")

@@ -282,6 +282,9 @@ VOICE_SLACK_S = 0.1  # (57) a voice's file this much longer or shorter than the 
 WATCH_END_S = 15.0  # a progress watch told to stop ends within its request's timeout
 PICTURE_TIMEOUT_S = 1800.0  # half an hour at most: the processor and a big model (29.1)
 LIVE = ("queued", "running")
+# a file of a job being deleted that Windows still holds - the window's player letting it go, ffmpeg - tried again
+REMOVE_TRIES, REMOVE_WAIT_S = 20, 0.1
+FILM_IDEA_CHARS = 40  # a film named in words: its idea, this long at most
 SIZES = SIDES  # a side, in pixels; a multiple of 16 (the models' latent grid)
 TIERS = ("main", "light", "quality")  # the picture a person gets unless they choose: the fast main one first
 RANK = {"light": 0, "main": 1, "quality": 2}  # how heavy a tier's models are: a rung lower is a lighter one
@@ -537,6 +540,65 @@ def jobs(conn, limit: int = 50) -> list[dict[str, Any]]:
 def job(conn, job_id: str) -> dict[str, Any] | None:
     found = conn.execute("SELECT * FROM visual_jobs WHERE id = ?", (job_id,)).fetchone()
     return _row(found) if found else None
+
+
+def film_of(conn, job_id: str) -> str | None:
+    """The idea of the film one of whose scenes is this job's clip (50.5 - its latest; 57.4 - the clip with its lips
+    made); None - no film's: deleting it would leave the film without it."""
+    row = conn.execute("SELECT f.idea FROM film_scenes s JOIN films f ON f.id = s.film_id WHERE s.job_id = ?",
+                       (job_id,)).fetchone()  # fmt: skip
+    if row is not None:
+        return row[0]
+    for idea, lips in conn.execute("SELECT f.idea, s.lips FROM film_scenes s JOIN films f ON f.id = s.film_id "
+                                   "WHERE s.lips != ''"):  # fmt: skip
+        with contextlib.suppress(json.JSONDecodeError, AttributeError):
+            if json.loads(lips).get("job") == job_id:
+                return idea
+    return None
+
+
+def improving(conn, job_id: str) -> bool:
+    """Whether an improvement of this video waits or goes on (54.5: its source is this job's MP4)."""
+    rows = conn.execute("SELECT enhance FROM visual_jobs WHERE status IN ('queued', 'running') AND enhance != ''")
+    for (how,) in rows:
+        with contextlib.suppress(json.JSONDecodeError, AttributeError):
+            if json.loads(how).get("job") == job_id:
+                return True
+    return False
+
+
+def own_files(media: Path, found: dict[str, Any]) -> list[Path]:
+    """A job's own files in data/media: in each folder its row names (its result, its first and last frames, the
+    voice copied for its run), each name that begins with the job's id - the result, its MP4, its poster, its last
+    frame (50.3), its frames (`<job>-source.png`, `<job>-last.png`) -, `voice-<job>` (57) and, a film's improved
+    video's, `film-<film>-<job>` (54.5). An improvement's source - another job's MP4, a film's joined video - is not
+    its own; nothing outside data/media."""
+    job_id = found["id"]
+    names = [found.get("file"), found.get("source"), found.get("last_frame"),
+             ((found.get("enhance") or {}).get("lips") or {}).get("file")]  # fmt: skip
+    root = media.resolve()
+    folders = {(media / name).parent.resolve() for name in names if name}
+    starts = (job_id, f"voice-{job_id}") + ((f"film-{found['film_id']}-{job_id}",) if found.get("film_id") else ())
+    out = []
+    for folder in sorted(folders):
+        if not folder.is_relative_to(root) or not folder.is_dir():
+            continue
+        out += [path for path in folder.iterdir() if path.is_file() and path.name.startswith(starts)]
+    return out
+
+
+def unlink_all(paths: list[Path]) -> None:
+    """Each file deleted - one Windows still holds (the window's player letting it go, ffmpeg) tried again for a
+    moment (REMOVE_TRIES × REMOVE_WAIT_S); OSError - still held."""
+    for path in paths:
+        for attempt in range(REMOVE_TRIES):
+            try:
+                path.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                if attempt == REMOVE_TRIES - 1:
+                    raise
+                time.sleep(REMOVE_WAIT_S)
 
 
 def _update(conn, job_id: str, **fields: Any) -> None:
@@ -1158,6 +1220,34 @@ class Visual:
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     await http.post(f"{self._url}/api/models/unload/{found['model_id']}")
         return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def remove(self, job_id: str) -> None:
+        """A picture or a video of the Studio deleted for good (the user's word, 2026-11-25): its own files
+        (`own_files`), then its row; `visual.deleted`. Not one going on - ✕ cancels it; not a film's scene's clip - the
+        film would lose it (deleted with the film, or filmed anew); not the source of an improvement going on. A chat's
+        picture or video stays: the chat keeps its own copy (data/blobs). A file Windows still holds - said."""
+        found = await self._db.acall(lambda conn: job(conn, job_id))
+        if found is None:
+            raise VisualError(tr("нет такой картинки"), 404)
+        if found["status"] in LIVE or job_id == self._running:
+            raise VisualError(tr("это ещё делается — сначала отмените (✕)"), 409)
+        idea = await self._db.acall(lambda conn: film_of(conn, job_id))
+        if idea is not None:
+            idea = idea if len(idea) <= FILM_IDEA_CHARS else idea[: FILM_IDEA_CHARS - 1].rstrip() + "…"
+            raise VisualError(tr("это сцена фильма «{idea}» — удалите фильм или переснимите сцену в «Режиссёре»",
+                                 idea=idea), 409)  # fmt: skip
+        if await self._db.acall(lambda conn: improving(conn, job_id)):
+            raise VisualError(tr("из этого ролика сейчас делается «Улучшить…» — дождитесь или отмените (✕)"), 409)
+        files = await asyncio.to_thread(own_files, self.media, found)
+        try:
+            await asyncio.to_thread(unlink_all, files)
+        except OSError as exc:
+            log.info("job %s: not deleted: %s", job_id, exc)
+            raise VisualError(tr("файл занят другой программой — закройте её и удалите снова: {name}",
+                                 name=Path(exc.filename or "").name or exc), 409) from exc  # fmt: skip
+        await self._db.acall(lambda conn: conn.execute("DELETE FROM visual_jobs WHERE id = ?", (job_id,)))
+        log.info("job %s deleted with %d file(s)", job_id, len(files))
+        await self._bus.publish("visual.deleted", {"id": job_id}, persist=False)
 
     async def can_draw(self) -> bool:
         """Whether a picture model is here: a new chat is offered generate_image (29.6)."""
