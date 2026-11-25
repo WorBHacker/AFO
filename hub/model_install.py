@@ -2638,7 +2638,8 @@ class Installer:
                 base = strata.home()
                 await asyncio.to_thread(strata.drop_kept, base, was["config"])
                 if Path(was["config"]) != Path(found["plan"]["config"]):
-                    await asyncio.to_thread(strata.forget, base, {"config": was["config"]})
+                    await asyncio.to_thread(strata.forget, base, {"config": was["config"],  # 45.5: its profile too
+                                                                  "profile": was.get("profile", "")})  # fmt: skip
             trial = result if "skipped" in result else {k: result.get(k) for k in ("seconds", "tok_s", "ttft_s")}
             await self._set(job_id, status="done", error="", trial=trial,
                             plan={k: v for k, v in found["plan"].items() if k != "was"})  # fmt: skip
@@ -2685,7 +2686,8 @@ class Installer:
         base = strata.home()
         await asyncio.to_thread(strata.put_back, base, was["config"])
         if plan.get("config") and Path(plan["config"]) != Path(was["config"]):  # another context: its own name
-            await asyncio.to_thread(strata.forget, base, {"config": plan["config"]})
+            await asyncio.to_thread(strata.forget, base, {"config": plan["config"],  # 45.5: its profile too
+                                                          "profile": plan.get("profile", "")})  # fmt: skip
         back = {k: v for k, v in plan.items() if k not in (*strata.SETTINGS, "was")} | was
         await self._set(job_id, plan=back)
         with contextlib.suppress(InstallError, llama_config.ConfigError):

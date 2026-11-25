@@ -524,6 +524,8 @@ def test_a_strata_models_settings_are_prepared_again_and_the_earlier_come_back_i
     done = wait_for(hub, job["id"], "done", "failed", timeout=60.0)
     assert done["status"] == "done" and Path(done["plan"]["config"]) == launch / "iq1_m-128k.json"
     assert not (launch / "iq1_m-64k.json").exists() and shown()["profile"] == (launch / "iq1_m-128k.json").as_posix()
+    profiles = strata.data(base) / "profiles"  # (45.5, the stand) Strata's profile of the earlier context goes too
+    assert not (profiles / "launch-iq1_m-64k.json").exists() and (profiles / "launch-iq1_m-128k.json").exists()
     assert json.loads((launch / "iq1_m-128k.json").read_text())["kv"] == "q4_0"  # the earlier choices kept
 
     FakeLlamaSwap.fail = True  # the next settings do not start
@@ -535,7 +537,7 @@ def test_a_strata_models_settings_are_prepared_again_and_the_earlier_come_back_i
     config = json.loads((launch / "iq1_m-128k.json").read_text())
     assert {k: config.get(k) for k in ("context", "kv", "parallel", "drafting")} == {
         "context": 131072, "kv": "q4_0", "parallel": "2", "drafting": None}  # as it was  # fmt: skip
-    assert not (launch / "iq1_m-256k.json").exists()
+    assert not (launch / "iq1_m-256k.json").exists() and not (profiles / "launch-iq1_m-256k.json").exists()
     assert shown()["strata"] == {"context": 131072, "kv": "q4_0", "parallel": 2, "drafting": "auto"}
     FakeLlamaSwap.fail = False
 
