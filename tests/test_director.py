@@ -232,7 +232,12 @@ def test_a_film_is_filmed_scene_after_scene_and_the_card_is_kept_between(hub, mo
     # between the scenes the card is the Studio's, held from local chats, and a chat is told why
     assert [(holder, free) for holder, free, _words in seen[1:]] == [("studio", False)] * 3
     assert all("фильм" in words for _h, _f, words in seen[1:])
-    assert state.card.holder == "" and state.card.free.is_set() and state.card.words() == ""  # given when it ended
+    # given when it ended: by the Studio's worker once the last scene's job is over - a moment after the film says
+    # «ready» (its job «done» first); the full run's load once caught that moment (2026-11-26)
+    deadline = time.monotonic() + 5.0
+    while state.card.holder and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert state.card.holder == "" and state.card.free.is_set() and state.card.words() == ""
 
     state.db.call(lambda conn: director.update_film(conn, film_id, file="2026-11/film-x.mp4"))
     hub.portal.call(lambda: state.director.shoot(film_id, only=1))
