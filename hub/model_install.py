@@ -45,7 +45,7 @@ import httpx
 
 from common import disks, hardware, kept_json
 from common.gguf import GGUFError, model_info, same_vocabulary, tokenizer_info
-from common.i18n import N_, tr
+from common.i18n import N_, decimal, tr
 from common.llama_memory import (
     COMPUTE_GIB,
     GIB,
@@ -111,7 +111,9 @@ REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and as
 CLOSED_TTL_S = 60.0  # «closed to this token» believed this long - the person may accept the terms meanwhile
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
-GAME_WORDS = N_("ждёт: на видеокарте игра")  # a trial waiting for the quiet while a game is on the card (48.9б5)
+GAME_WORDS = N_("ждёт: на видеокарте игра {name}")  # a trial waiting for the quiet while a game is on the card (48.9б5)
+# ... or another program's model (after 45.5, the user's word «Ждать, как игру»): its name and what it holds
+OTHER_WORDS = N_("ждёт: видеокарту занимает {name} — {gib} ГБ")
 ENGINE_WAIT_S = 2.0  # how often a model downloaded before the engine looks for it again (39.3)
 ENGINE_WAIT = N_("ждёт программу для локальных моделей: она скачивается")
 # a draft model guesses ahead for a model at least this many times its size (42.3): a larger one guesses too slowly to
@@ -315,6 +317,16 @@ def reserve_save(conn, vram_gib: Any, ram_gib: Any) -> dict[str, float]:
                  "value = excluded.value, updated_at = excluded.updated_at",
                  (RESERVE_SETTING, json.dumps(value), utc_now()))  # fmt: skip
     return value
+
+
+def card_words(other: dict[str, Any] | None) -> str:
+    """Why a trial waits for the card, by name (48.9б5; after 45.5): a game on it, or another program's model and what
+    it holds; '' - neither."""
+    if not other:
+        return ""
+    if other.get("kind") == "game":
+        return tr(GAME_WORDS, name=other.get("name") or "")
+    return tr(OTHER_WORDS, name=other.get("name") or "", gib=decimal(f"{other.get('gib') or 0:g}"))
 
 
 def room(status: dict[str, Any] | None, reserve: dict[str, float] | None = None,
@@ -631,6 +643,7 @@ class Installer:
         self._deferring = False
         self._asking: asyncio.Future | None = None
         self._quiet: set[str] = set()
+        self._card_said: dict[str, str] = {}  # what a trial waiting for the card said why (48.9б5; after 45.5)
         # 48.9б4: a game on the card while the trial goes on - its answers not taken, no verdict (`_played`, looked at
         # beside it by `_seeing`); put off as by a senior
         self._played: Played | None = None
@@ -2187,25 +2200,28 @@ class Installer:
         beside it - the trial, by the person's button too, waits for the card still, and says why."""
         quiet = Quiet(self.card) if background else None
         while True:
-            if quiet is None and self.card.other():  # 48.9б5: its answer would not be taken (48.9б4) - not loaded
+            other = self.card.other()  # a game, another program's model (after 45.5)
+            if quiet is None and other:  # 48.9б5: its answer would not be taken (48.9б4) - not loaded
                 quiet = Quiet(self.card)
             if (quiet.look() if quiet is not None else not self.card.asked) and self.card.try_take(
                     TRIAL, chats=chats, stop=self._stop_trial):  # fmt: skip
                 break
             if cancel.is_set():
                 raise hf.Cancelled()
-            # waiting for the person's card (48.9д), for a game to end (48.9б5) - and why
-            why = tr(GIVEN_WORDS) if self.card.given else tr(GAME_WORDS) if self.card.other() else ""
+            # waiting for the person's card (48.9д), a game to end (48.9б5), another's model to go - and why, by name
+            why = tr(GIVEN_WORDS) if self.card.given else card_words(other)
             found = await self._get(job_id)
             if found["status"] != "trialwait" or found["error"] != why:
                 await self._set(job_id, status="trialwait", error=why)
+            if why:
+                self._card_said[job_id] = why
             await asyncio.sleep(CARD_WAIT_S)
         self._deferring = False  # before any `await`: a stop said from now on is this trial's
         self._quiet.discard(job_id)
         self._played = Played(self.card)  # 48.9б4: a game on the card from now on - no verdict; looked at beside it
         self._seeing = asyncio.create_task(self._played.watch(CARD_WAIT_S))
-        if (await self._get(job_id))["error"] in (tr(GIVEN_WORDS), tr(GAME_WORDS)):  # the card is the trial's: no
-            await self._set(job_id, error="")  # longer waiting
+        if (await self._get(job_id))["error"] in (tr(GIVEN_WORDS), self._card_said.pop(job_id, None)):  # the card is
+            await self._set(job_id, error="")  # the trial's: no longer waiting
 
     def _stop_trial(self) -> None:
         """A senior needs the card (48.9в: a chat, the Studio, any local request): the trial going on stops - its

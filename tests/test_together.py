@@ -1285,14 +1285,14 @@ def test_a_game_that_takes_the_card_during_a_trial_leaves_no_verdict(installs, m
         answering.set()
     waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=20)
     assert waiting["status"] == "trialwait", ("a verdict beside a game", waiting["status"], waiting["error"])
-    assert waiting["error"] in ("", "ждёт: на видеокарте игра")  # not failed: waiting, and why (48.9б5)
+    assert waiting["error"] in ("", "ждёт: на видеокарте игра quest")  # not failed: waiting, and why (48.9б5)
     assert not (waiting.get("trial") or {}).get("tries")  # nothing of it written
     text = lc.config_path().read_text(encoding="utf-8")
     assert "tiny-q4_k_m" in lc.model_blocks(text) and lc.model_view(text, "tiny-q4_k_m")["context"] == planned
     FakeLlamaSwap.fail = False
     time.sleep(1.2)
     again = wait_for(installs, job["id"], "trialwait")  # not tried again beside the game
-    assert again["error"] == "ждёт: на видеокарте игра", again["error"]
+    assert again["error"] == "ждёт: на видеокарте игра quest", again["error"]
     state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
     done = wait_for(installs, job["id"], "done", "failed", timeout=20)
     assert done["status"] == "done", done["error"]
@@ -1321,8 +1321,38 @@ def test_a_trial_by_the_button_with_a_game_on_the_card_loads_nothing(installs, m
     asked = [b for b in FakeLlamaSwap.asked if b.get("model") == added["model_id"]]
     assert not asked, "the model was loaded beside the game"
     waiting = wait_for(installs, job["id"], "trialwait")
-    assert waiting["error"] == "ждёт: на видеокарте игра", waiting["error"]
+    assert waiting["error"] == "ждёт: на видеокарте игра quest", waiting["error"]
     state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20)
+    assert done["status"] == "done" and not done["error"], done["error"]
+
+
+def test_a_trial_waits_while_another_program_s_model_holds_the_card_and_names_it(installs, monkeypatch):  # noqa: F811
+    """After 45.5 (the user's word «Ждать, как игру»): Strata's trial went beside the person's own AFO with gemma on
+    the card (15,8 GB), Windows pushed one of them out and the answer broke off. With another program's model on the
+    card a trial - by the person's button too - loads nothing, says why by name and what it holds, and goes once the
+    card is still: that model unloaded."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.5)
+    state = installs.app.state
+    model = installs.tmp / "E" / "LLM" / "Mine-Q8_0.gguf"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(tiny_gguf(340_000))
+    job = installs.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"}).json()["job"]
+    added = wait_for(installs, job["id"], "added", "failed")
+    assert added["status"] == "added", added["error"]
+    theirs = {"exe": r"C:\Users\p\AppData\Local\Programs\AFO\engines\llama.cpp\llama-server.exe",
+              "name": "llama-server.exe", "mib": 16180.0, "where": "kept", "why": "tool", "playing": False,
+              "afo_mib": 0.0, "other_mib": 16180.0}  # fmt: skip
+    state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": 16100}}
+    state.gpu.state = {**state.gpu.state, "programs": [theirs]}  # the person's own AFO holds gemma
+    assert installs.post(f"/v1/install/jobs/{job['id']}/trial").status_code == 200
+    time.sleep(1.0)
+    asked = [b for b in FakeLlamaSwap.asked if b.get("model") == added["model_id"]]
+    assert not asked, "the model was loaded beside another program's model"
+    waiting = wait_for(installs, job["id"], "trialwait")
+    assert waiting["error"] == "ждёт: видеокарту занимает llama-server — 15,8 ГБ", waiting["error"]
+    state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": 1500}}
+    state.gpu.state = {**state.gpu.state, "programs": []}  # its model unloaded
     done = wait_for(installs, job["id"], "done", "failed", timeout=20)
     assert done["status"] == "done" and not done["error"], done["error"]
 
