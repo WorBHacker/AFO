@@ -92,6 +92,7 @@ from .goals import Goals
 from .gpu_card import GpuCard
 from .gpu_prefs import Prefs as GpuPrefs
 from .gpu_prefs import Watcher as GpuWatcher
+from .gpu_prefs import own_pids
 from .history import History
 from .judge import Judge
 from .links import Rescanner
@@ -231,7 +232,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.tuner.on_tuned = app.state.installer.tuned
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
-        app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
+        app.state.gpu = GpuWatcher(
+            db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s, own=lambda: own_pids(settings.llama_swap_url)
+        )  # AFO's own on the card (after 45.5)
         # the card is still (48.9б2): its load low - the status monitor's look - and no game on it, even at low load
         app.state.card.load = lambda: ((app.state.status.latest or {}).get("gpu") or {}).get("util_pct")
         app.state.card.game = lambda: any(p.get("playing") and p.get("where") != "moved"  # 48.9б3: not a launcher

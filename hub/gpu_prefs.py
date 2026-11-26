@@ -11,6 +11,11 @@ the integrated graphics through Windows' own «Графика» setting, so the 
 - The adapters (DXGI, through ctypes): which one Windows gives a program on each choice - moving is worth it only when
   they are two. Each program's video memory on each adapter: Windows' «GPU Process Memory» counters (PDH), as the Task
   Manager shows it; their sum is more than the card holds (evicted memory, shared surfaces) - a difference is right.
+  (2026-11-26, the user's card with nothing loaded: dwm 7,1 GB and NVIDIA's overlay 3,6 GB by them, 1,5 GB by the card.)
+- Whose each program on the card is (the card's queue, found at 45.5): AFO's own - this hub and what it started, the
+  llama-swap on its port and what that started -, or another's: another llama-swap's model is another program's. The
+  card is looked at with one adapter too (a card of its own memory): moving needs two, seeing a game or another's model
+  does not.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import re
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .db import utc_now
 
@@ -386,6 +392,8 @@ ENGINE_FILES = ("UnityPlayer.dll", "GameAssembly.dll")  # a Unity game beside it
 # drawing is AFO's work) and Windows' compositor
 OWN_ENGINES = frozenset({"llama-server.exe", "llama-bench.exe", "llama-swap.exe", "sd-server.exe", "sd.exe"})
 COMPOSITOR = "dwm.exe"
+CARD_MIB = 2048  # an adapter with this much memory of its own is a graphics card: looked at alone too (after 45.5)
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def why_kept(program: dict[str, Any], facts: dict[str, Any]) -> str | None:
@@ -518,9 +526,30 @@ def machine_facts() -> dict[str, Any]:
             "afo": [o.lower().rstrip("\\") + "\\" for o in afo if o]}  # fmt: skip
 
 
+def own_pids(url: str | None = None) -> set[int]:
+    """AFO's own processes now (the card's queue, after 45.5): this hub and all it started (its engines, a trial's
+    llama-server), and the llama-swap that listens on `url`'s port here - the one AFO's local models go through, the
+    person's own one too - with all it started (llama-server, sd-server, Strata). Another llama-swap's models are
+    another program's."""
+    import psutil
+
+    from .processes import listener
+
+    roots = [os.getpid()]
+    parts = urlsplit(url or "")
+    if (parts.hostname or "") in LOCAL_HOSTS and (found := listener(parts.port or 8080)):
+        roots.append(found["pid"])
+    own: set[int] = set()
+    for pid in roots:
+        with contextlib.suppress(psutil.Error, OSError):
+            own |= {pid, *(child.pid for child in psutil.Process(pid).children(recursive=True))}
+    return own
+
+
 def look_now(luids: set[str]) -> list[dict[str, Any]]:
-    """The programs holding these adapters' memory now (Windows' counters): exe, name, pids, MiB, how busy their 3D
-    keeps the card. A program Windows does not let us look at (its own services) is left out."""
+    """The programs holding these adapters' memory now (Windows' counters): exe, name, pids, MiB (`pid_mib` - each
+    pid's), how busy their 3D keeps the card. A program Windows does not let us look at (its own services) is left
+    out."""
     import psutil
 
     memory = process_memory()
@@ -536,9 +565,11 @@ def look_now(luids: set[str]) -> list[dict[str, Any]]:
             continue
         if not exe:
             continue
-        entry = out.setdefault(exe.lower(), {"exe": exe, "name": name, "pids": [], "mib": 0.0, "busy_3d": 0.0})
+        entry = out.setdefault(exe.lower(), {"exe": exe, "name": name, "pids": [], "mib": 0.0, "busy_3d": 0.0,
+                                             "pid_mib": {}})  # fmt: skip
         entry["pids"].append(pid)
         entry["mib"] += mib
+        entry["pid_mib"][pid] = entry["pid_mib"].get(pid, 0.0) + mib
         entry["busy_3d"] = max(entry["busy_3d"], drawing.get(pid, 0.0))
     return list(out.values())
 
@@ -562,7 +593,7 @@ class Watcher:
     there after «Выход» too, and only «Вернуть как было» gives them back. The state says what each program is."""
 
     def __init__(self, db, bus, prefs: Prefs, *, interval_s: float = CHECK_S, look=None, facts=None, choice=None,
-                 adapters=None):  # fmt: skip
+                 adapters=None, own=None):  # fmt: skip
         self._db = db
         self._bus = bus
         self.prefs = prefs
@@ -571,6 +602,7 @@ class Watcher:
         self._facts = facts or machine_facts
         self._choice = choice or globals()["choice"]
         self._adapters = adapters or globals()["adapters"]
+        self._own = own or own_pids  # AFO's own processes (after 45.5); the server's knows its llama-swap's port
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self.state: dict[str, Any] = {"available": False, "on": True, "integrated": "", "card": "", "programs": [],
@@ -595,7 +627,9 @@ class Watcher:
             await asyncio.sleep(self._interval)
 
     async def check(self) -> dict[str, Any]:
-        """One look: the programs on the card, each moved or kept (and why); the state published when it changed."""
+        """One look: the programs on the card, each moved or kept (and why), and how much of what it holds is AFO's
+        own (`afo_mib`) and another's (`other_mib`); the state published when it changed. With one adapter - a card
+        of its own memory - it is looked at too, nothing moved (after 45.5)."""
         async with self._lock:
             try:
                 found = await asyncio.to_thread(self._choice)
@@ -604,10 +638,14 @@ class Watcher:
                 found = {"two": False, "power_saving": {}, "high_performance": {}}
             on = await self._db.acall(lambda conn: _get(conn, ON_SETTING, True))
             high = found.get("high_performance") or {}
-            luids = {a["luid"] for a in await asyncio.to_thread(self._adapters)
+            listed = await asyncio.to_thread(self._adapters)
+            luids = {a["luid"] for a in listed
                      if a.get("vendor") == high.get("vendor") and a["luid"] != (found.get("power_saving") or {}).get(
                          "luid")} | ({high["luid"]} if high.get("luid") else set())  # fmt: skip
-            seen = await asyncio.to_thread(self._look, luids) if found.get("two") else []
+            card = found.get("two") or any(a.get("luid") == high.get("luid") and not a.get("software")
+                                           and (a.get("dedicated_mib") or 0) >= CARD_MIB for a in listed)  # fmt: skip
+            seen = await asyncio.to_thread(self._look, luids) if card and luids else []
+            own = await asyncio.to_thread(self._own) if seen else set()  # after the look: what it saw is in it
             facts = await asyncio.to_thread(self._facts)
             choices = await self._db.acall(lambda conn: _get(conn, CHOICES_SETTING, {}))
             games = set(await self._db.acall(lambda conn: _get(conn, GAMES_SETTING, [])))
@@ -630,15 +668,18 @@ class Watcher:
                     moved_now.append(program)
                     facts["moved"].add(low)
                 where = "waits" if low in facts["moved"] else "kept" if why else "card"
+                each = program.get("pid_mib") or {pid: program["mib"] / len(program["pids"]) for pid in program["pids"]}
+                afo = sum(mib for pid, mib in each.items() if pid in own)
                 rows[low] = {"exe": program["exe"], "name": program["name"], "mib": round(program["mib"], 1),
-                             "where": where, "why": why or "", "playing": playing(program, facts)}  # fmt: skip
+                             "where": where, "why": why or "", "playing": playing(program, facts),
+                             "afo_mib": round(afo, 1), "other_mib": round(program["mib"] - afo, 1)}  # fmt: skip
             moved = await self._db.acall(load_moved)
             freed = 0.0
             for exe, record in moved.items():
                 if exe.lower() not in rows:
                     rows[exe.lower()] = {"exe": exe, "name": record.get("name") or exe.rsplit("\\", 1)[-1],
                                          "mib": record.get("held_mib") or 0.0, "where": "moved", "why": "",
-                                         "playing": False}  # fmt: skip
+                                         "playing": False, "afo_mib": 0.0, "other_mib": 0.0}  # fmt: skip
                     freed += record.get("held_mib") or 0.0
             state = {"available": bool(found.get("two")), "on": bool(on),
                      "integrated": (found.get("power_saving") or {}).get("name", ""), "card": high.get("name", ""),

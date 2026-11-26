@@ -321,6 +321,11 @@ def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa:
             "Видеокарта — моделям",
             "Перезапустите их, чтобы освободить видеопамять для моделей: Code.exe",
         )
+        # one adapter (after 45.5): the hub looks at the card and lists its programs, but nothing moves - no list
+        wait_until(lambda: not app.bg.busy)  # the state asked again after «gpu.moved» has come
+        app.on_event({"type": "gpu.prefs", "payload": {"state": {**gpu.state, "available": False}}})
+        wait_until(lambda: not gpu.available)
+        assert gpu.programs == [] and gpu.summary.startswith("Встроенной графики рядом с видеокартой нет")
     finally:
         quick.close()
 

@@ -172,6 +172,96 @@ def test_the_watcher_moves_programs_on_the_card_and_says_which_wait(key, hub):  
     assert gpu_prefs.Registry().read(r"C:\Apps\Notes.exe") is None
 
 
+ORPHAN = """import subprocess, sys
+subprocess.Popen([sys.executable, "-c", sys.argv[1], *sys.argv[2:]], creationflags=subprocess.CREATE_NO_WINDOW)
+"""  # starts its argument and ends: what it started is nobody's child here - as a program the person started
+SWAP = """import socket, subprocess, sys, time
+listening = socket.socket()
+listening.bind(("127.0.0.1", 0))
+listening.listen()
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+open(sys.argv[1], "w").write(f"{listening.getsockname()[1]} {child.pid}")
+time.sleep(60)
+"""  # a llama-swap: listens on a port, a model's engine under it
+
+
+def _orphan(tmp_path, code: str, *args: str) -> None:
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "-c", ORPHAN, code, *args], check=True, timeout=30)
+
+
+def test_afo_s_own_processes_are_its_hub_s_and_its_llama_swap_s(tmp_path):
+    """After 45.5 (the card's queue did not see another program's model): AFO's own processes are this hub and what it
+    started, and the llama-swap on AFO's port with what that started - started by whoever (the person's own llama-swap
+    that AFO uses too). Another llama-swap and its engine are another program's, though their names are the same.
+    Real processes: two «llama-swaps» nobody here started, each with an engine under it."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    import psutil
+
+    ours, theirs = tmp_path / "ours.txt", tmp_path / "theirs.txt"
+    _orphan(tmp_path, SWAP, str(ours))
+    _orphan(tmp_path, SWAP, str(theirs))
+    mine = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])  # the hub's own engine
+    try:
+        deadline = time.monotonic() + 30
+        while not (ours.exists() and theirs.exists() and ours.read_text() and theirs.read_text()):
+            assert time.monotonic() < deadline, "the stand-ins did not start"
+            time.sleep(0.1)
+        port, engine = map(int, ours.read_text().split())
+        other_engine = int(theirs.read_text().split()[1])
+        swap = next(c.pid for c in psutil.net_connections(kind="tcp")
+                    if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port)  # fmt: skip
+        other_swap = psutil.Process(other_engine).ppid()
+        own = gpu_prefs.own_pids(f"http://127.0.0.1:{port}/")
+        assert {os.getpid(), mine.pid, swap, engine} <= own  # the hub, its engine, its llama-swap and that one's
+        assert not {other_swap, other_engine} & own  # another llama-swap and its model: another program's
+        alone = gpu_prefs.own_pids(None)  # no llama-swap of AFO's here (one on another computer)
+        assert {os.getpid(), mine.pid} <= alone and not {swap, engine, other_swap, other_engine} & alone
+    finally:
+        mine.kill()
+        for found in (ours, theirs):
+            for pid in (int(p) for p in (found.read_text().split() if found.exists() else [])[1:]):
+                with contextlib.suppress(psutil.Error):
+                    parent = psutil.Process(pid).parent()
+                    psutil.Process(pid).kill()
+                    if parent is not None and parent.pid != os.getpid():
+                        parent.kill()
+
+
+def test_the_card_is_looked_at_with_one_adapter_and_says_whose_memory_is_whose(key, hub):  # noqa: F811
+    """After 45.5: with no integrated graphics beside the card nothing was looked at - background work saw neither a
+    game nor another's model on it. A card of its own memory is looked at alone too; nothing moves (that needs two).
+    Each program says how much it holds for AFO (`afo_mib`: its pids AFO's own) and for another (`other_mib`); an
+    integrated graphics alone is not a card to look at."""
+    one = {"two": False, "power_saving": {"luid": "n", "name": "RTX"},
+           "high_performance": {"luid": "n", "name": "RTX", "vendor": "nvidia"}}  # fmt: skip
+    card = [{"luid": "n", "vendor": "nvidia", "dedicated_mib": 16303, "software": False}]
+    seen = [{**program(r"D:\AI\llama.cpp\llama-server.exe", "llama-server.exe", 15000.0), "pids": [11, 12],
+             "pid_mib": {11: 9000.0, 12: 6000.0}},
+            program(r"C:\Apps\Telegram.exe", "Telegram.exe", 34.0),
+            program(r"E:\Games\Delta\delta.exe", "delta.exe", 900.0, busy_3d=60.0)]  # fmt: skip
+    watcher = gpu_prefs.Watcher(hub.app.state.db, hub.app.state.bus, gpu_prefs.Prefs(hub.app.state.db),
+                                interval_s=0, look=lambda luids: list(seen), facts=lambda: dict(FACTS),
+                                choice=lambda: one, adapters=lambda: card, own=lambda: {11})  # fmt: skip
+    state = hub.portal.call(watcher.check)
+    rows = {p["name"]: p for p in state["programs"]}
+    assert not state["available"] and set(rows) == {"llama-server.exe", "Telegram.exe", "delta.exe"}
+    assert (rows["llama-server.exe"]["afo_mib"], rows["llama-server.exe"]["other_mib"]) == (9000.0, 6000.0)
+    assert (rows["Telegram.exe"]["afo_mib"], rows["Telegram.exe"]["other_mib"]) == (0.0, 34.0)
+    assert rows["delta.exe"]["playing"] and rows["Telegram.exe"]["where"] == "card"  # seen, not moved
+    assert gpu_prefs.Registry().read(r"C:\Apps\Telegram.exe") is None
+
+    integrated = [{"luid": "n", "vendor": "intel", "dedicated_mib": 128, "software": False}]
+    watcher._adapters = lambda: integrated
+    assert hub.portal.call(watcher.check)["programs"] == []  # no card of its own memory: nothing to look at
+
+
 def test_the_api(hub):  # noqa: F811
     """43.6: GET /v1/gpu - the state; PUT - the switch; PUT /v1/gpu/programs - the person's choice for a program;
     POST /v1/gpu/give-back - «Вернуть как было». The desktop app only."""

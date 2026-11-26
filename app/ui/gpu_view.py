@@ -64,7 +64,8 @@ class GpuView(QObject):
 
     @Property(list, notify=changed)
     def programs(self) -> list:
-        return program_rows(self._state.get("programs") or [])
+        """With one adapter the hub looks at the card too (after 45.5), but nothing moves: no list to choose in."""
+        return program_rows(self._state.get("programs") or []) if self.available else []
 
     @Property(str, notify=changed)
     def summary(self) -> str:
