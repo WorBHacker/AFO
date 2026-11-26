@@ -1248,6 +1248,7 @@ def test_another_program_s_model_keeps_background_work_waiting_as_a_game_does(in
     on_card(16100, theirs, *desktop)
     assert not tuned("fast"), "tuning measured beside another program's model"
     assert state.card.other() == {"kind": "program", "name": "llama-server", "gib": 15.8}
+    assert tuner.job["card"] == state.card.other(), tuner.job  # the window names it (after 45.5)
     on_card(1542, *desktop)  # its model unloaded; the desktop's counters as they were on the user's card
     wait(lambda: measured == ["fast"], timeout=10)
     assert state.card.other() is None

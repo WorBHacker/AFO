@@ -5406,6 +5406,15 @@ def test_tuning_by_measurement_in_the_models_sheet(app):
     measuring = {"status": "measuring", "model_id": "big", "done": 3, "total": 12}
     assert ms.tune_text({**state, "job": measuring}, "big") == "Замер настроек: 3 из 12…" + UNLOADED
     assert ms.tune_text({**state, "job": {"status": "waiting", "model_id": "big"}}, "big").startswith("Жду")
+    # what holds the card, by name (after 45.5; «Стабилизация»: the game's name)
+    held = {"status": "waiting", "model_id": "big", "why": "quiet",
+            "card": {"kind": "program", "name": "llama-server", "gib": 15.8}}  # fmt: skip
+    assert ms.tune_text({**state, "job": held}, "big") == (
+        "Жду: видеокарту занимает llama-server (15,8 ГБ) — замер начнётся, когда она её отпустит.")  # fmt: skip
+    game = {**held, "why": "busy", "card": {"kind": "game", "name": "Hades2"}}
+    assert ms.tune_text({**state, "job": game}, "big") == (
+        "Жду: на видеокарте игра Hades2 — замер начнётся, когда её закроют.")  # fmt: skip
+    assert ms.tune_text({**state, "job": {**held, "why": "given"}}, "big").startswith("Жду: видеокарта отдана вам")
     assert ms.tune_text({**state, "job": {"status": "idle", "queue": ["big"]}}, "big") == "В очереди на замер."
     better = {"status": "better", "at": "2026-11-04T20:00:00Z", "before": {"tg": 40.2, "pp": 900.0},
               "after": {"tg": 52.4, "pp": 1500.0},

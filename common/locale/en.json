@@ -765,6 +765,8 @@
  "Жду тишины на видеокарте: три минуты без разговоров, Студии и игры.": "Waiting for the graphics card to be quiet: three minutes with no chats, Studio or game.",
  "Жду, пока видеокарта освободится: идёт разговор, Студия или другая программа.": "Waiting for the graphics card to be free: a chat, the Studio or another program is using it.",
  "Жду: видеокарта отдана вам после «Выгрузить» — „Продолжить“ в строке состояния.": "Waiting: the graphics card was given to you by “Unload” — “Continue” in the status bar.",
+ "Жду: видеокарту занимает {name} ({gib} ГБ) — замер начнётся, когда она её отпустит.": "Waiting: {name} holds the graphics card ({gib} GB) - the measuring starts once it lets it go.",
+ "Жду: на видеокарте игра {name} — замер начнётся, когда её закроют.": "Waiting: the game {name} is on the graphics card - the measuring starts once it is closed.",
  "Ждут ответа: %1": "Waiting for an answer: %1",
  "Ждут подтверждения: %1 — кто ждёт (Ctrl+Shift+A)": "Waiting for approval: %1 — who is waiting (Ctrl+Shift+A)",
  "Журналы не собраны: {error}": "Logs not collected: {error}",

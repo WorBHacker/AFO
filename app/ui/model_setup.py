@@ -633,6 +633,12 @@ def tune_text(state: dict[str, Any], model_id: str) -> str:
         return tr("Проверяю, встаёт ли модель с новыми настройками и всем контекстом…")
     if mine and job.get("status") == "waiting" and job.get("why") == "given":  # 48.9д
         return tr("Жду: видеокарта отдана вам после «Выгрузить» — „Продолжить“ в строке состояния.")
+    held = job.get("card") or {}  # what holds the card, by name: a game, another program's model (after 45.5)
+    if mine and job.get("status") == "waiting" and held.get("kind") == "game":
+        return tr("Жду: на видеокарте игра {name} — замер начнётся, когда её закроют.", name=held.get("name") or "")
+    if mine and job.get("status") == "waiting" and held:
+        return tr("Жду: видеокарту занимает {name} ({gib} ГБ) — замер начнётся, когда она её отпустит.",
+                  name=held.get("name") or "", gib=decimal(f"{held.get('gib') or 0:g}"))  # fmt: skip
     if mine and job.get("status") == "waiting" and job.get("why") == "quiet":
         return tr("Жду тишины на видеокарте: три минуты без разговоров, Студии и игры.")
     if mine and job.get("status") == "waiting":
