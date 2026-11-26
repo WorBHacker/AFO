@@ -1280,6 +1280,7 @@ def test_a_game_that_takes_the_card_during_a_trial_leaves_no_verdict(installs, m
         wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
         planned = lc.model_view(lc.config_path().read_text(encoding="utf-8"), "tiny-q4_k_m")["context"]
         state.gpu.state = {**state.gpu.state, "programs": [game]}  # a game begins and takes the card's memory
+        state.gpu.looked = time.monotonic()  # 43.6 has looked: since the trial began
         FakeLlamaSwap.logs["tiny-q4_k_m"] = "cudaMalloc failed: out of memory\n"
         FakeLlamaSwap.fail = True  # the model does not start
     finally:
@@ -1356,6 +1357,47 @@ def test_a_trial_waits_while_another_program_s_model_holds_the_card_and_names_it
     state.gpu.state = {**state.gpu.state, "programs": []}  # its model unloaded
     done = wait_for(installs, job["id"], "done", "failed", timeout=20)
     assert done["status"] == "done" and not done["error"], done["error"]
+
+
+def test_the_trial_s_own_model_is_not_read_as_another_s_that_has_just_left(installs, monkeypatch):  # noqa: F811
+    """Found by the live check after 45.5 (the stand, the 7B): another program's model left the card, the card's use
+    fell at once - the trial went; it loaded its own model and the use rose again while 43.6's last look (up to
+    CHECK_S old) still named the other program: «ждёт: видеокарту занимает llama-server — 4,7 ГБ», the trial's answer
+    thrown away as one given beside it. Only a look made since the work began says what came on the card meanwhile."""
+    state = installs.app.state
+    watcher = state.gpu
+    model = installs.tmp / "E" / "LLM" / "Mine-Q8_0.gguf"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(tiny_gguf(340_000))
+    job = installs.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"}).json()["job"]
+    added = wait_for(installs, job["id"], "added", "failed")
+    assert added["status"] == "added", added["error"]
+    one = {"two": False, "power_saving": {"luid": "n"}, "high_performance": {"luid": "n", "vendor": "nvidia"}}
+    theirs = {**_on_card(r"D:\Other\llama.cpp\llama-server.exe", 4800.0), "pids": [8]}  # another's, started by hand
+    monkeypatch.setattr(watcher, "_choice", lambda: one)
+    monkeypatch.setattr(watcher, "_adapters", lambda: [{"luid": "n", "vendor": "nvidia", "dedicated_mib": 16303}])
+    monkeypatch.setattr(watcher, "_look", lambda luids: [theirs])
+    monkeypatch.setattr(watcher, "_facts", lambda: {"games": set(), "game_folders": [], "windows": "c:\\windows\\",
+                                                    "own": []})  # fmt: skip
+    monkeypatch.setattr(watcher, "_own", lambda: {7})
+    state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": 6409}}
+    installs.portal.call(watcher.check)  # 43.6's look: another program's model on the card
+    assert state.card.other() == {"kind": "program", "name": "llama-server", "gib": 4.7}
+    state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": 1610}}
+    assert state.card.other() is None  # it left: the card holds nothing of it; 43.6 has not looked since
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        assert installs.post(f"/v1/install/jobs/{job['id']}/trial").status_code == 200
+        wait(lambda: any(b.get("model") == added["model_id"] for b in FakeLlamaSwap.asked), timeout=20)
+        # the trial's own model loaded: the card's use up again; 43.6 has not looked since
+        state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": 6409}}
+        assert state.card.other() == {"kind": "program", "name": "llama-server", "gib": 4.7}  # what the old look says
+        time.sleep(1.5)  # the trial looks at the card every CARD_WAIT_S beside its question
+    finally:
+        answering.set()
+    done = wait_for(installs, job["id"], "done", "failed", "trialwait", timeout=20)
+    assert done["status"] == "done" and not done["error"], (done["status"], done["error"])
+    assert done["trial"]["tries"][0]["ok"]
 
 
 def test_unload_stops_the_studio_as_by_x_and_its_queue_waits_for_the_person(installs, monkeypatch):  # noqa: F811

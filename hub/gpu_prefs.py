@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -640,6 +641,7 @@ class Watcher:
         self._lock = asyncio.Lock()
         self.state: dict[str, Any] = {"available": False, "on": True, "integrated": "", "card": "", "programs": [],
                                       "freed_mib": 0.0}  # fmt: skip
+        self.looked = 0.0  # when the state's programs were looked at: time.monotonic just before the look
 
     def start(self) -> None:
         if self._interval > 0 and os.name == "nt":
@@ -677,6 +679,7 @@ class Watcher:
                          "luid")} | ({high["luid"]} if high.get("luid") else set())  # fmt: skip
             card = found.get("two") or any(a.get("luid") == high.get("luid") and not a.get("software")
                                            and (a.get("dedicated_mib") or 0) >= CARD_MIB for a in listed)  # fmt: skip
+            began = time.monotonic()  # what runs from now on may be missing from the look
             seen = await asyncio.to_thread(self._look, luids) if card and luids else []
             own = await asyncio.to_thread(self._own) if seen else set()  # after the look: what it saw is in it
             facts = await asyncio.to_thread(self._facts)
@@ -718,11 +721,12 @@ class Watcher:
                      "integrated": (found.get("power_saving") or {}).get("name", ""), "card": high.get("name", ""),
                      "programs": sorted(rows.values(), key=lambda r: (r["where"] != "waits", -r["mib"])),
                      "freed_mib": round(freed, 1)}  # fmt: skip
+        changed = state != self.state
+        self.looked, self.state = began, state  # together, no `await` between: the card reads the two at once
         if moved_now:  # each waits for its restart: the window says so
             said = [{"exe": p["exe"], "name": p["name"], "mib": round(p["mib"], 1)} for p in moved_now]
             await self._bus.publish("gpu.moved", {"programs": said})
-        if state != self.state:
-            self.state = state
+        if changed:
             await self._bus.publish("gpu.prefs", {"state": state}, persist=False)
         return state
 

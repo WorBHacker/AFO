@@ -242,6 +242,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.card.other = lambda: gpu_on_card(
             app.state.gpu.state, ((app.state.status.latest or {}).get("gpu") or {}).get("vram_used_mib"),
             app.state.installer.reserve.get("vram_gib", 1.0))  # fmt: skip
+        app.state.card.looked = lambda: app.state.gpu.looked  # when that state was looked at (the live check)
         # the card given by «Выгрузить», the Studio's queue held - in the hub's status, at once when it changes (48.9д)
         app.state.status.card = lambda: {**app.state.card.state(), "studio_held": app.state.visual.held}
         app.state.card_news = set()

@@ -127,6 +127,8 @@ class GpuCard:
         # program's model (after 45.5) - {"kind": "game" | "program", "name", "gib"?}, None - nothing
         self.load: Callable[[], float | None] = lambda: None
         self.other: Callable[[], dict | None] = lambda: None
+        # when what `other` says was looked at (time.monotonic, 43.6's look every CHECK_S); by default now
+        self.looked: Callable[[], float] = time.monotonic
         # the person's work without them on local models, one at a time (61.8): a run, a goal's turn, the judge
         self.lane = asyncio.Semaphore(1)
 
@@ -300,14 +302,17 @@ class Played:
     (48.9б4): the work does not give way to a game begun meanwhile - the quiet is looked at before it starts -, but what
     it found then is not kept: its numbers, its verdict were the game's too. `look` - now, or once since it began;
     `watch` looks every few seconds beside the work (43.6 looks at the programs every CHECK_S: a game shorter than that
-    may pass unseen)."""
+    may pass unseen). Only a look at the programs made since the work began counts: an older one does not know what
+    the work itself loaded - AFO's own model, loaded just as another's left, was read as that other's while the card's
+    use went up (the live check after 45.5)."""
 
     def __init__(self, card: GpuCard) -> None:
         self._card = card
+        self._since = time.monotonic()
         self.seen = False
 
     def look(self) -> bool:
-        self.seen = self.seen or bool(self._card.other())
+        self.seen = self.seen or (self._card.looked() >= self._since and bool(self._card.other()))
         return self.seen
 
     async def watch(self, every: float) -> None:
