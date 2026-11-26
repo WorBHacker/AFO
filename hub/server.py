@@ -92,6 +92,7 @@ from .goals import Goals
 from .gpu_card import GpuCard
 from .gpu_prefs import Prefs as GpuPrefs
 from .gpu_prefs import Watcher as GpuWatcher
+from .gpu_prefs import on_card as gpu_on_card
 from .gpu_prefs import own_pids
 from .history import History
 from .judge import Judge
@@ -235,10 +236,12 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.gpu = GpuWatcher(
             db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s, own=lambda: own_pids(settings.llama_swap_url)
         )  # AFO's own on the card (after 45.5)
-        # the card is still (48.9б2): its load low - the status monitor's look - and no game on it, even at low load
+        # the card is still (48.9б2): its load low - the status monitor's look - and no game on it, even at low load,
+        # nor another program's model (after 45.5): what the card holds, by the same look, says it is real
         app.state.card.load = lambda: ((app.state.status.latest or {}).get("gpu") or {}).get("util_pct")
-        app.state.card.game = lambda: any(p.get("playing") and p.get("where") != "moved"  # 48.9б3: not a launcher
-                                          for p in app.state.gpu.state.get("programs") or [])  # fmt: skip
+        app.state.card.other = lambda: gpu_on_card(
+            app.state.gpu.state, ((app.state.status.latest or {}).get("gpu") or {}).get("vram_used_mib"),
+            app.state.installer.reserve.get("vram_gib", 1.0))  # fmt: skip
         # the card given by «Выгрузить», the Studio's queue held - in the hub's status, at once when it changes (48.9д)
         app.state.status.card = lambda: {**app.state.card.state(), "studio_held": app.state.visual.held}
         app.state.card_news = set()

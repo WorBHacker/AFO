@@ -2187,7 +2187,7 @@ class Installer:
         beside it - the trial, by the person's button too, waits for the card still, and says why."""
         quiet = Quiet(self.card) if background else None
         while True:
-            if quiet is None and self.card.game():  # 48.9б5: its answer would not be taken (48.9б4) - not loaded
+            if quiet is None and self.card.other():  # 48.9б5: its answer would not be taken (48.9б4) - not loaded
                 quiet = Quiet(self.card)
             if (quiet.look() if quiet is not None else not self.card.asked) and self.card.try_take(
                     TRIAL, chats=chats, stop=self._stop_trial):  # fmt: skip
@@ -2195,7 +2195,7 @@ class Installer:
             if cancel.is_set():
                 raise hf.Cancelled()
             # waiting for the person's card (48.9д), for a game to end (48.9б5) - and why
-            why = tr(GIVEN_WORDS) if self.card.given else tr(GAME_WORDS) if self.card.game() else ""
+            why = tr(GIVEN_WORDS) if self.card.given else tr(GAME_WORDS) if self.card.other() else ""
             found = await self._get(job_id)
             if found["status"] != "trialwait" or found["error"] != why:
                 await self._set(job_id, status="trialwait", error=why)

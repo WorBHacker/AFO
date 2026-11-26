@@ -26,10 +26,11 @@ later, an install's trial is «ждёт пробного запуска» again 
 
 One rule of quiet for background work (48.9б2) - automatic tuning, a stopped one, a deferred trial: the card has been
 still for QUIET_S (`Quiet`) - no local request, nobody holding it, its load under BUSY_PCT, no game on it even at low
-load (in its menu, paused). A download is not on the card. Started by the person's button, it goes once the card is
-still (`still`); stopped by a senior, it is background work - else it would come back at each message, and the models
-go to and fro. A game begun while tuning or a trial goes on does not stop it, but what it found beside the game is not
-kept (48.9б4, `Played`): it is stopped work - nothing written, back in the queue as background work.
+load (in its menu, paused), nor another program's model (after 45.5, the user's word «Ждать, как игру»). A download
+is not on the card. Started by the person's button, it goes once the card is still (`still`); stopped by a senior, it
+is background work - else it would come back at each message, and the models go to and fro. A game begun while
+tuning or a trial goes on does not stop it, but what it found beside the game is not kept (48.9б4, `Played`): it is
+stopped work - nothing written, back in the queue as background work.
 
 «Выгрузить» goes through the owner (48.9г): «the card is needed by me now». Whoever holds it is stopped - the Studio's
 job as by ✕, a trial put off, tuning stopped - and the card is given to the person (`give_away`): until their next
@@ -121,10 +122,11 @@ class GpuCard:
         self.pushed_at = 0.0  # when «Продолжить» was said (48.9д): background work begun before it goes once still
         self.on_change: Callable[[], None] | None = None  # set by the server: the window hears of «отдана» (48.9д)
         self.asked: dict[str, int] = {}  # who asks the local models now -> how many (48.9а)
-        # set by the server (48.9б2): the card's load now, % - the status monitor's look; a game on it - 43.6's
-        # (48.9б3: one Windows or 43.6 knows, or drawing now - not a launcher by its folder's name)
+        # set by the server (48.9б2): the card's load now, % - the status monitor's look; what else is on it - 43.6's:
+        # a game (48.9б3: one Windows or 43.6 knows, or drawing now - not a launcher by its folder's name) or another
+        # program's model (after 45.5) - {"kind": "game" | "program", "name", "gib"?}, None - nothing
         self.load: Callable[[], float | None] = lambda: None
-        self.game: Callable[[], bool] = lambda: False
+        self.other: Callable[[], dict | None] = lambda: None
         # the person's work without them on local models, one at a time (61.8): a run, a goal's turn, the judge
         self.lane = asyncio.Semaphore(1)
 
@@ -142,10 +144,11 @@ class GpuCard:
 
     def still(self) -> bool:
         """Nothing on the card now (48.9б2): no local request, nobody holds it, its load under BUSY_PCT, no game on
-        it - one in its menu or paused loads it little and comes back any moment."""
+        it - one in its menu or paused loads it little and comes back any moment -, nor another program's model
+        (after 45.5: it loads the card little between its answers)."""
         load = self.load()
         return (not self.asked and not self.holder and not self.given and (load is None or load < BUSY_PCT)
-                and not self.game())  # fmt: skip
+                and not self.other())  # fmt: skip
 
     @contextlib.contextmanager
     def asking(self, who: str | None = None) -> Iterator[None]:
@@ -293,17 +296,18 @@ class Quiet:
 
 
 class Played:
-    """Whether a game was on the card while tuning or a trial had it (48.9б4): the work does not give way to a game
-    begun meanwhile - the quiet is looked at before it starts -, but what it found then is not kept: its numbers, its
-    verdict were the game's too. `look` - now, or once since it began; `watch` looks every few seconds beside the work
-    (43.6 looks at the programs every CHECK_S: a game shorter than that may pass unseen)."""
+    """Whether a game - or another program's model (after 45.5) - was on the card while tuning or a trial had it
+    (48.9б4): the work does not give way to a game begun meanwhile - the quiet is looked at before it starts -, but what
+    it found then is not kept: its numbers, its verdict were the game's too. `look` - now, or once since it began;
+    `watch` looks every few seconds beside the work (43.6 looks at the programs every CHECK_S: a game shorter than that
+    may pass unseen)."""
 
     def __init__(self, card: GpuCard) -> None:
         self._card = card
         self.seen = False
 
     def look(self) -> bool:
-        self.seen = self.seen or bool(self._card.game())
+        self.seen = self.seen or bool(self._card.other())
         return self.seen
 
     async def watch(self, every: float) -> None:

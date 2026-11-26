@@ -352,7 +352,7 @@ def test_what_tuning_measured_beside_a_game_is_not_kept(hub, setup, monkeypatch)
 
     found = tuner(hub, measured={})
     found._run = run
-    found._card.game = lambda: game["on"]
+    found._card.other = lambda: {"kind": "game", "name": "quest"} if game["on"] else None
 
     async def until(condition, what_for):
         started = time.monotonic()
@@ -1457,7 +1457,8 @@ def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, s
         "halted")  # fmt: skip
     stays("a chat stopped the tuning")
     found = tuned(measured={"q8_0": [(512, 900, 40)]})
-    assert asyncio.run(during_the_draft(found, lambda: setattr(found._card, "game", lambda: True)))["status"] == (
+    game = {"kind": "game", "name": "x"}
+    assert asyncio.run(during_the_draft(found, lambda: setattr(found._card, "other", lambda: game)))["status"] == (
         "halted")  # fmt: skip
     stays("a game came while the draft was measured")
 

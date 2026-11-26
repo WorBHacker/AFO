@@ -394,6 +394,10 @@ OWN_ENGINES = frozenset({"llama-server.exe", "llama-bench.exe", "llama-swap.exe"
 COMPOSITOR = "dwm.exe"
 CARD_MIB = 2048  # an adapter with this much memory of its own is a graphics card: looked at alone too (after 45.5)
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+# another program's model on the card (after 45.5, the user's word «Ждать, как игру»): a program that works on the card
+# - an engine of models, a tool of CUDA -, not AFO's own, holding this much: AFO's background work waits for it
+OTHER_GIB = 2.0
+WORKS_ON_CARD = NEEDS_CARD | OWN_ENGINES | {"koboldcpp.exe", "ollama_llama_server.exe", "llama-cli.exe"}
 
 
 def why_kept(program: dict[str, Any], facts: dict[str, Any]) -> str | None:
@@ -437,6 +441,35 @@ def playing(program: dict[str, Any], facts: dict[str, Any]) -> bool:
     if name == COMPOSITOR or name in OWN_ENGINES or any(low.startswith(own) for own in facts.get("afo", [])):
         return False
     return program.get("busy_3d", 0.0) >= BUSY_3D or low in facts["games"]
+
+
+def shown_name(program: dict[str, Any]) -> str:
+    """A program's name as the window says it: its file's, without «.exe»."""
+    name = program.get("name") or str(program.get("exe") or "").rsplit("\\", 1)[-1]
+    return name[:-4] if name.lower().endswith(".exe") else name
+
+
+def on_card(state: dict[str, Any], used_mib: float | None, reserve_gib: float) -> dict[str, Any] | None:
+    """What keeps AFO's background work off the card (48.9б3; after 45.5), from the watcher's state: a game -
+    {"kind": "game", "name"} -, or another program's model - {"kind": "program", "name", "gib"}: a program that works on
+    the card (WORKS_ON_CARD, Python) and is not AFO's own, holding OTHER_GIB or more by Windows' counter. The card says
+    so too (`used_mib`, the status monitor's look; None - not known): all it holds less AFO's own is more than the
+    desktop's share (`reserve_gib`) by OTHER_GIB - the counters say more than the card holds. None - nothing of
+    theirs."""
+    programs = [p for p in state.get("programs") or [] if p.get("where") != "moved"]
+    for program in programs:
+        if program.get("playing"):
+            return {"kind": "game", "name": shown_name(program)}
+    named = {id(p): shown_name(p).lower() for p in programs}
+    others = [p for p in programs if (p.get("other_mib") or 0.0) >= OTHER_GIB * 1024 and (
+        named[id(p)] + ".exe" in WORKS_ON_CARD or named[id(p)].startswith("python"))]  # fmt: skip
+    if not others:
+        return None
+    afo = sum(p.get("afo_mib") or 0.0 for p in programs)
+    if used_mib is not None and used_mib - afo < (reserve_gib + OTHER_GIB) * 1024:
+        return None
+    top = max(others, key=lambda p: p["other_mib"])
+    return {"kind": "program", "name": shown_name(top), "gib": round(top["other_mib"] / 1024, 1)}
 
 
 def windows_games() -> set[str]:

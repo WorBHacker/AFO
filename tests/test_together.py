@@ -1160,6 +1160,7 @@ def test_a_launcher_does_not_break_the_quiet_a_known_game_paused_does(installs, 
     monkeypatch.setattr(watcher, "_look", lambda luids: list(seen))
     monkeypatch.setattr(watcher, "_facts", lambda: {"games": set(windows_games), "game_folders": [],
                                                     "windows": "c:\\windows\\", "own": []})  # fmt: skip
+    monkeypatch.setattr(watcher, "_own", lambda: {1})  # the programs here are AFO's own processes (after 45.5)
 
     def on_card(*programs) -> None:
         seen[:] = programs
@@ -1198,6 +1199,67 @@ def test_a_launcher_does_not_break_the_quiet_a_known_game_paused_does(installs, 
     assert not measured, "a program drawing 3D now did not keep background work waiting"
     on_card()
     wait(lambda: measured == ["big"], timeout=10)
+
+
+def test_another_program_s_model_keeps_background_work_waiting_as_a_game_does(installs, monkeypatch):  # noqa: F811
+    """Found at 45.5 (the stand; the user's word after it - «Ждать, как игру»): another program's model on the card -
+    the person's own AFO on 8080 with gemma, 15,8 GB - was not seen by the card's queue: not a game, and its
+    llama-server is named as AFO's engine. Strata's trial went beside it, Windows pushed gemma out and the answer
+    broke off. Now a program that works on the card and is not AFO's own, holding 2 GB or more, keeps background work
+    waiting as a game does - when the card says so too: the counters of the desktop say more than it holds (the
+    user's card, nothing loaded: dwm 7,1 GB by them, 1,5 GB by the card). AFO's own engine, its name the same, keeps
+    nothing."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    state = installs.app.state
+    tuner, watcher = state.tuner, state.gpu
+    measured = []
+
+    async def tune(model_id, *, automatic=False):  # what it measures is not this test's
+        measured.append(model_id)
+        tuner.job = {"status": "idle"}
+        return {"status": "same"}
+
+    monkeypatch.setattr(tuner, "tune", tune)
+    seen: list = []
+    one = {"two": False, "power_saving": {"luid": "n"}, "high_performance": {"luid": "n", "vendor": "nvidia"}}
+    monkeypatch.setattr(watcher, "_choice", lambda: one)  # one card, no integrated graphics beside it
+    monkeypatch.setattr(watcher, "_adapters", lambda: [{"luid": "n", "vendor": "nvidia", "dedicated_mib": 16303}])
+    monkeypatch.setattr(watcher, "_look", lambda luids: list(seen))
+    monkeypatch.setattr(watcher, "_facts", lambda: {"games": set(), "game_folders": [], "windows": "c:\\windows\\",
+                                                    "own": []})  # fmt: skip
+    monkeypatch.setattr(watcher, "_own", lambda: {7})  # AFO's own process: pid 7
+
+    def on_card(used_mib: int, *programs) -> None:
+        state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "vram_used_mib": used_mib}}
+        seen[:] = programs
+        installs.portal.call(watcher.check)
+
+    def tuned(model_id: str) -> bool:
+        measured.clear()
+        installs.portal.call(tuner.request, model_id, True)
+        time.sleep(1.0)
+        return bool(measured)
+
+    theirs = {**_on_card(r"C:\Users\p\AppData\Local\Programs\AFO\engines\llama.cpp\llama-server.exe", 16180.0),
+              "pids": [8]}  # fmt: skip
+    desktop = [_on_card(r"C:\Windows\System32\dwm.exe", 7095.0),
+               _on_card(r"C:\Program Files\NVIDIA Corporation\NVIDIA App\CEF\NVIDIA Overlay.exe", 3568.0)]  # fmt: skip
+    on_card(16100, theirs, *desktop)
+    assert not tuned("fast"), "tuning measured beside another program's model"
+    assert state.card.other() == {"kind": "program", "name": "llama-server", "gib": 15.8}
+    on_card(1542, *desktop)  # its model unloaded; the desktop's counters as they were on the user's card
+    wait(lambda: measured == ["fast"], timeout=10)
+    assert state.card.other() is None
+
+    ours = {**_on_card(r"D:\AFO\engines\llama.cpp\llama-server.exe", 15000.0), "pids": [7]}
+    on_card(16600, ours, *desktop)
+    assert state.card.other() is None and tuned("big"), "AFO's own model kept background work waiting"
+    comfy = {**_on_card(r"C:\ComfyUI\python_embeded\python.exe", 9000.0), "pids": [9]}
+    on_card(10500, comfy, *desktop)
+    assert state.card.other() == {"kind": "program", "name": "python", "gib": 8.8}
+    on_card(1500, comfy, *desktop)  # its counter says 9 GB, the card 1,5: nothing of it there
+    assert state.card.other() is None
 
 
 def test_a_game_that_takes_the_card_during_a_trial_leaves_no_verdict(installs, monkeypatch):  # noqa: F811
