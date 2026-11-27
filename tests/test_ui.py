@@ -4,6 +4,7 @@ history and a streamed answer (no QML warnings allowed). Offscreen, software sce
 import base64
 import copy
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -7827,28 +7828,32 @@ def animated_clip(colours: list[tuple[int, int, int]], side: int = 32) -> bytes:
     return animated_webp(frames, side, side)
 
 
-def stands_still(player) -> None:
-    """Until its MP4 is there a video's first frame stands still, drawn, and it does not play (48.12.8: the live
-    check - the WebP played meanwhile, then the MP4 from its start: the clip began twice)."""
+def plays_meanwhile(player) -> float:
+    """Until its MP4 is there a video's WebP plays, read forward («Стабилизация» 2026-11-27, «в чате не работает
+    воспроизведение видео»: its first frame stood still - for minutes the first time, while ffmpeg was fetched); how
+    far into the clip it is, 0 to 1."""
     seen = set()
-    deadline = time.monotonic() + 0.8  # the WebP would be at its 8th frame
+    deadline = time.monotonic() + 0.6  # the WebP is at its 6th frame
     while time.monotonic() < deadline:
         QApplication.processEvents()
         seen.add(shown_colour(player, 0.85))  # below what may lie over a card's top: a notice and its shadow
         time.sleep(0.02)
-    assert seen == {0}, seen
-    assert not player.property("playing") and item_named(player, "videoStill").property("currentFrame") == 0
+    assert len(seen - {None}) >= 3, seen
+    assert player.property("playing") and item_named(player, "videoStill").property("currentFrame") > 0
+    return player.property("at")
 
 
-def begins_once(player) -> None:
-    """Its MP4 there, the clip plays from its start on: its time goes only forward (48.12.8)."""
+def takes_on(player, at: float) -> None:
+    """Its MP4 there, the clip goes on from the frame the WebP was at (`at`, or later), not from its start - it began
+    twice (48.12.8) -, and its time goes forward."""
     times = []
     deadline = time.monotonic() + 0.6
     while time.monotonic() < deadline:
         QApplication.processEvents()
         times.append(player.property("position"))
         time.sleep(0.02)
-    assert player.property("playing") and times[0] < 600 and times == sorted(times) and times[-1] > times[0], times
+    assert player.property("playing") and times[0] >= at * player.property("duration") - 150, (at, times)
+    assert times[-1] > times[0] and sum(b < a for a, b in itertools.pairwise(times)) <= 1, times  # once round, at most
 
 
 def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
@@ -7906,13 +7911,12 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         assert frames.property("source").toString() == view.videoFile and frames.property("cache") is False
         assert not item_named(player, "visualSeek").property("enabled")
         assert item_named(player, "visualTime").property("text") == view.videoNote != ""
-        # «Стабилизация» from 48.12.8 (2026-11-27): the clip stands while its MP4 is made - it is the video being
-        # made ready, not only its seeking
-        assert view.videoNote == "готовлю видео… В первый раз AFO скачает ffmpeg (~86 МБ)"
-        stands_still(video)
+        # «Стабилизация» 2026-11-27: the clip plays while its MP4 is made - what waits for it is the seeking
+        assert view.videoNote == "готовлю перемотку… В первый раз AFO скачает ffmpeg (~86 МБ)"
+        at = plays_meanwhile(video)
         release.set()
         wait_until(lambda: view.videoMp4 != "" and video.property("seekable"))
-        begins_once(video)
+        takes_on(video, at)
         assert video.property("duration") == 1500 and view.videoNote == ""
         assert frames.property("source").toString() == ""  # the WebP let go
         media = video.findChild(QMediaPlayer)
@@ -8010,10 +8014,10 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         assert frames.property("cache") is False  # read as it goes, not kept
         assert not item_named(card, "toolVideoSeek").property("enabled")
         assert item_named(card, "toolVideoTime").property("text") == app.visual_view.chatVideos[blob]["note"] != ""
-        stands_still(player)
+        at = plays_meanwhile(player)
         release.set()
         wait_until(lambda: player.property("seekable"))
-        begins_once(player)
+        takes_on(player, at)
         media = player.findChild(QMediaPlayer)
         assert media.source() == QUrl.fromLocalFile(str(app.paths.blobs / f"{blob}.mp4"))
         assert player.property("duration") == 1500 and frames.property("source").toString() == ""

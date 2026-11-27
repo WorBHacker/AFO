@@ -390,7 +390,7 @@ class VisualView(QObject):
         if key in self._unplayable:
             return tr("без перемотки: {error}", error=self._unplayable[key])
         if key in self._making:
-            return tr("готовлю видео… В первый раз AFO скачает ffmpeg (~86 МБ)")
+            return tr("готовлю перемотку… В первый раз AFO скачает ffmpeg (~86 МБ)")  # the clip plays meanwhile
         return ""
 
     @Slot(str, result=str)

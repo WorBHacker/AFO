@@ -2554,7 +2554,7 @@
  "голос длиннее ролика на {over} с — его конец не войдёт": "the voice is {over} s longer than the video — its end will not fit",
  "голос короче ролика на {under} с — дальше ролик без звука, губы как были": "the voice is {under} s shorter than the video — after it the video is silent, the lips as they were",
  "готова": "ready",
- "готовлю видео… В первый раз AFO скачает ffmpeg (~86 МБ)": "getting the video ready… The first time AFO downloads ffmpeg (~86 MB)",
+ "готовлю перемотку… В первый раз AFO скачает ffmpeg (~86 МБ)": "getting seeking ready… The first time AFO downloads ffmpeg (~86 MB)",
  "готово": "done",
  "готово за {time}": "done in {time}",
  "графику ей уже выбрали в Windows": "its graphics are chosen in Windows already",
