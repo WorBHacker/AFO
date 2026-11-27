@@ -8598,8 +8598,10 @@ def test_the_studio_shows_a_videos_steps_or_its_time(qapp):
 def test_the_studio_with_only_video_models_films(qapp):
     """48.8, found by the user on the stand: video models installed and no picture model - the Studio was empty, «Модели
     для картинок ещё нет» and its panel hidden, no video to film (`hasModels` counted the pictures alone). Now it opens
-    on the video, the switch hidden (one kind to make), and films; a picture asked for is not to be had."""
-    from PySide6.QtCore import QObject
+    on the video and films; a picture asked for is not to be had. «Картинка | Видео» is there all the same
+    («Стабилизация» 2026-11-27, «нет переключателя картинка/видео» - it was hidden with one kind): «Картинка» says
+    there is no model for it, and a click opens «Установки» on the picture models, the video kept."""
+    from PySide6.QtCore import QMetaObject, QObject
 
     from app.ui.main import QuickApp
 
@@ -8621,7 +8623,16 @@ def test_the_studio_with_only_video_models_films(qapp):
         assert view.hasModels and view.mode == "video"
         assert not item_named(studio, "visualInstall").property("visible")  # no «Поставить модель картинок» page
         assert item_named(studio, "visualDraw").property("visible")
-        assert not item_named(studio, "visualMode").property("visible")  # nothing to switch to
+        switch = item_named(studio, "visualMode")
+        assert switch.property("visible") and [m["id"] for m in view.modes] == ["picture", "video"]
+        assert view.modes[0]["tip"].startswith("Модели для картинок ещё нет") and view.modes[1]["tip"] == ""
+        sheet = quick.window.findChild(QObject, "installSheet")
+        picture = next(b for b in switch.childItems() if any(t.property("text") == "Картинка" for t in b.childItems()))
+        click(quick.window, picture)
+        wait_until(lambda: sheet.property("opened") and app.install_view.purpose == "image")
+        assert view.mode == "video" and app.install_view.tab == "catalog"
+        QMetaObject.invokeMethod(sheet, "close")
+        wait_until(lambda: not sheet.property("visible"))
         view.setMode("picture")
         assert view.mode == "video"
         view.draw()

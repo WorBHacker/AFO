@@ -46,6 +46,8 @@ STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done"
 RECENT = 30  # the Studio's gallery (48.7в) - and its queue: the jobs going on are among the latest
 GALLERY = [("all", N_("Всё")), ("image", N_("Картинки")), ("video", N_("Видео"))]  # 48.7в
 MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
+NO_KIND = {"picture": N_("Модели для картинок ещё нет — щелчок откроет «Установки»"),
+           "video": N_("Модели для видео ещё нет — щелчок откроет «Установки»")}  # fmt: skip
 # a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
 # the switch's short word (the Studio's column is narrow), the model menu's whole one
 VIDEO_MODES = [("text", N_("Описание"), N_("по описанию")), ("picture", N_("Кадр"), N_("по картинке")),
@@ -263,8 +265,20 @@ class VisualView(QObject):
 
     @Property(list, notify=changed)
     def modes(self) -> list:
-        """The switch's choices: the kinds there are models for - one kind, nothing to switch (48.8)."""
-        return [{"id": k, "name": tr(n)} for k, n in MODES if k in self._kinds()]
+        """The switch's choices: pictures and videos, always («Стабилизация» 2026-11-27, «нет переключателя
+        картинка/видео»: with one kind's models alone it was hidden, 48.8); a kind without a model says so, and a
+        click on it offers one (`pickMode`)."""
+        kinds = self._kinds()
+        return [{"id": k, "name": tr(n), "tip": "" if k in kinds else tr(NO_KIND[k])} for k, n in MODES]
+
+    @Slot(str)
+    def pickMode(self, mode: str) -> None:
+        """The switch clicked: a kind there is a model for - made so; one without - «Установки» with its models."""
+        kinds = self._kinds()
+        if mode in dict(MODES) and kinds and mode not in kinds:
+            self.app.install_view.offer("video" if mode == "video" else "image")
+            return
+        self.setMode(mode)
 
     @Property(str, notify=changed)
     def mode(self) -> str:

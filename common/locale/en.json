@@ -1087,6 +1087,8 @@
  "Модели GPT по ключу — оплата за токены": "GPT models with a key — pay per token",
  "Модели Gemini через Google Cloud — оплата со счёта Google Cloud, запросы не идут на обучение. Нужен файл ключа сервисного аккаунта (JSON) с ролью «Vertex AI User»": "Gemini models through Google Cloud — paid from the Google Cloud account, requests are not used for training. Needs a service account's key file (JSON) with the role “Vertex AI User”",
  "Модели Gemini. На бесплатном уровне Google может использовать запросы для улучшения своих моделей — для закрытого кода нужен платный": "Gemini models. On the free tier Google may use requests to improve its models — closed code needs the paid one",
+ "Модели для видео ещё нет — щелчок откроет «Установки»": "No video model yet — a click opens “Installs”",
+ "Модели для картинок ещё нет — щелчок откроет «Установки»": "No picture model yet — a click opens “Installs”",
  "Модели за 30 дней": "Models over 30 days",
  "Модели на жёстком диске загружаются в разы медленнее — перенесите их на SSD или NVMe.": "Models on a hard disk load several times slower — move them to an SSD or NVMe.",
  "Модели на это время выгружены из видеопамяти, после замера вернутся сами.": "The models are unloaded from the video memory meanwhile; they come back by themselves after the measuring.",

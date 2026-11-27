@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// One choice out of a few, as a row of small buttons: options [{id, name}], `value` is the chosen id. A click only
+// One choice out of a few, as a row of small buttons: options [{id, name}, a `tip` if it has one - said on hover, the
+// button's words faint], `value` is the chosen id. A click only
 // says `picked`: the owner changes what `value` is bound to (or, keeping the choice itself, sets `value`). Writing
 // `value` here would cut the owner's binding - the program's own change of the choice would no longer show (the fix
 // after 0.1.15: «Поиск» stayed lit over «Подборка»).
@@ -21,6 +22,9 @@ Flow {
             implicitWidth: label.implicitWidth + 22
             hoverEnabled: true
             onClicked: segmented.picked(modelData.id)
+            ToolTip.visible: hovered && !!option.modelData.tip
+            ToolTip.delay: 500
+            ToolTip.text: option.modelData.tip || ""
             background: Rectangle {
                 radius: 6
                 color: option.chosen ? Theme.p.item_selected : (option.hovered ? Theme.p.item_hover : "transparent")
@@ -29,7 +33,7 @@ Flow {
             contentItem: Text {
                 id: label
                 text: option.modelData.name
-                color: option.chosen ? Theme.p.text : Theme.p.text_soft
+                color: option.chosen ? Theme.p.text : option.modelData.tip ? Theme.p.faint : Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 13
                 horizontalAlignment: Text.AlignHCenter
