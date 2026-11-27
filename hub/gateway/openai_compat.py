@@ -86,6 +86,73 @@ class _Banner:
         return held
 
 
+# a model's own marks around the reasoning it writes into its answer: Kimi-VL-A3B-Thinking's, and the usual ones
+THINK_MARKS = {"◁think▷": "◁/think▷", "<think>": "</think>"}
+
+
+class _Marks:
+    """Reasoning a model writes into the answer itself, between its own marks (48.9е: Kimi-VL-A3B-Thinking's
+    «◁think▷…◁/think▷» - llama.cpp b11899 does not take them apart into reasoning_content, and the chat showed the
+    reasoning as the answer). Looked for only at the answer's very start, and only while no reasoning came apart: a
+    server that takes it apart itself, or an answer that begins otherwise, goes as it is. Pieces are held while they may
+    still be a mark's start (one arrives in pieces: «◁thi», «nk▷»)."""
+
+    def __init__(self) -> None:
+        self.state = "start"  # start -> inside -> after (the line breaks after the closing mark) -> over
+        self.held = ""
+        self.close = ""
+
+    def feed(self, think: str, text: str) -> tuple[str, str]:
+        """(reasoning, answer) to go on with."""
+        if self.state == "start" and think:  # the server took the reasoning apart itself
+            self.state = "over"
+            return think, self.flush() + text
+        if self.state == "over" or not text:
+            return think, text
+        if self.state == "inside":
+            return self._inside(text)
+        if self.state == "after":
+            return think, self._after(text)
+        self.held += text
+        head = self.held.lstrip()
+        for mark, close in THINK_MARKS.items():
+            if head.startswith(mark):
+                self.state, self.close, self.held = "inside", close, ""
+                return self._inside(head[len(mark):])
+        if head and not any(mark.startswith(head) for mark in THINK_MARKS):
+            self.state = "over"
+            return "", self.flush()
+        return "", ""  # it may still be a mark («◁thi»), or only blanks so far
+
+    def _inside(self, piece: str) -> tuple[str, str]:
+        held = self.held + piece
+        if self.close in held:
+            thought, answer = held.split(self.close, 1)
+            self.state, self.held = "after", ""
+            return thought, self._after(answer)
+        keep = next((n for n in range(min(len(self.close) - 1, len(held)), 0, -1)
+                     if self.close.startswith(held[-n:])), 0)  # fmt: skip
+        self.held = held[len(held) - keep:] if keep else ""
+        return held[: len(held) - keep], ""
+
+    def _after(self, piece: str) -> str:
+        """The answer after the reasoning begins at its first word, not at the marks' line breaks."""
+        answer = piece.lstrip("\r\n")
+        if answer:
+            self.state = "over"
+        return answer
+
+    def end(self) -> tuple[str, str]:
+        """The stream ended: what was held - the answer's start that only looked like a mark, or the reasoning of one
+        never closed."""
+        held, self.held = self.held, ""
+        return (held, "") if self.state == "inside" else ("", held)
+
+    def flush(self) -> str:
+        held, self.held = self.held, ""
+        return held
+
+
 class OpenAICompatProvider:
     # the answer's parameters this API takes (D39): the hub's name -> the request's; llama.cpp's server takes them all
     param_names: ClassVar[dict[str, str]] = {
@@ -217,6 +284,7 @@ class OpenAICompatProvider:
         started = time.monotonic()
         first_at: float | None = None
         banner = _Banner()
+        marks = _Marks()
         chunks = 0
         usage: dict = {}
         timings: dict = {}
@@ -280,6 +348,7 @@ class OpenAICompatProvider:
                     text = delta.get("content") or ""
                     details += [d for d in delta.get("reasoning_details") or [] if isinstance(d, dict)]
                     loading, think, text, loaded = banner.feed(think, text)
+                    think, text = marks.feed(think, text)  # (48.9е) reasoning between the model's own marks
                     for piece in loading:
                         yield StreamEvent("loading", piece)
                     if loaded:
@@ -300,6 +369,13 @@ class OpenAICompatProvider:
         if held := banner.flush():  # it ended while still looking like the banner's start: the model's own
             thought.append(held)
             yield StreamEvent("reasoning", held)
+        think, text = marks.end()
+        if think:
+            thought.append(think)
+            yield StreamEvent("reasoning", think)
+        if text:
+            written.append(text)
+            yield StreamEvent("content", text)
         made = [_call(index, call) for index, call in sorted(calls.items()) if call["name"]]
         if not made and tools and self.locality == "local" and not cancel.is_set():  # its call written as text (61.6)
             made = text_calls.found("".join(written), {t["name"] for t in tools})

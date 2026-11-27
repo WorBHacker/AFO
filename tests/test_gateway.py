@@ -176,6 +176,30 @@ def test_the_loading_banner_in_pieces():
         assert [(e.kind, e.text) for e in events if e.kind != "end"] == kinds
 
 
+def test_reasoning_a_model_writes_between_its_own_marks_is_reasoning():
+    """48.9е: Kimi-VL-A3B-Thinking writes its reasoning into the answer itself, between its marks («◁think▷Хорошо,
+    пользователь спрашивает…◁/think▷») - llama.cpp b11899 does not take them apart, and the chat showed it as the
+    answer, not folded as «думает». Now what is between the marks at the answer's start is reasoning, the marks in
+    pieces too; the usual <think> the same; an answer that only begins like a mark, a mark later in the answer, or one
+    after reasoning the server took apart itself - as they are; a mark never closed - reasoning to the end."""
+
+    def run(*deltas: dict) -> tuple[str, str]:
+        body = sse(*[json.dumps({"choices": [{"delta": d}]}) for d in deltas])
+        events = asyncio.run(collect(provider_with(lambda request: httpx.Response(200, content=body))))
+        return ("".join(e.text for e in events if e.kind == "reasoning"),
+                "".join(e.text for e in events if e.kind == "content"))  # fmt: skip
+
+    kimi = ["◁thi", "nk▷Хорошо, пользователь", " спрашивает", " о погоде…◁/th", "ink▷", "\n\nПривет!", " Ясно."]
+    assert run(*({"content": p} for p in kimi)) == ("Хорошо, пользователь спрашивает о погоде…", "Привет! Ясно.")
+    assert run({"content": "<think>шаг 1</think>Ответ"}) == ("шаг 1", "Ответ")
+    assert run({"content": " "}, {"content": "<thinking"}, {"content": " — это мысли"}) == (
+        "", " <thinking — это мысли")  # only like a mark: the answer as it is
+    assert run({"content": "Ответ: "}, {"content": "<think>нет</think>"}) == ("", "Ответ: <think>нет</think>")
+    assert run({"reasoning_content": "сам"}, {"content": "<think>x</think>y"}) == ("сам", "<think>x</think>y")
+    assert run({"content": "◁think▷"}, {"content": "думаю и"}, {"content": " обрываюсь ◁/"}) == (
+        "думаю и обрываюсь ◁/", "")  # never closed: all of it reasoning, the held piece too
+
+
 def test_a_local_model_is_asked_only_the_depths_its_template_takes():
     """0.1.13: Qwen3.8's chat template takes xhigh, medium and low only - «max» was a 500 from llama.cpp. The levels
     llama-swap's models take (read from their templates, hub/llama_config.model_efforts) are in the catalog for the
