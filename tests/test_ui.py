@@ -7905,6 +7905,9 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         assert frames.property("source").toString() == view.videoFile and frames.property("cache") is False
         assert not item_named(player, "visualSeek").property("enabled")
         assert item_named(player, "visualTime").property("text") == view.videoNote != ""
+        # «Стабилизация» from 48.12.8 (2026-11-27): the clip stands while its MP4 is made - it is the video being
+        # made ready, not only its seeking
+        assert view.videoNote == "готовлю видео… В первый раз AFO скачает ffmpeg (~86 МБ)"
         stands_still(video)
         release.set()
         wait_until(lambda: view.videoMp4 != "" and video.property("seekable"))
