@@ -69,6 +69,7 @@ class FilmView(QObject):
         self.app = app
         self.studio = app.visual_view
         self.studio.changed.connect(self.changed.emit)  # a scene's step, its MP4 made, the video models
+        app.modelChanged.connect(self.changed.emit)  # the models that may write the script
         self.changed.connect(self._sync_cards)
         self._kind = "manual"
         self._films: list[dict[str, Any]] = []
@@ -80,6 +81,7 @@ class FilmView(QObject):
         self._no_photo = False  # the film's photo taken away, not sent yet
         self._joint = "cut"
         self._checks = True  # «Проверять сцены» of a film not begun yet; one begun has its own
+        self._director = ""  # «Сценарий пишет» of a film not begun yet: a model, "" - the role's
         self._sound = True  # «Со звуком» (52.6), the same way
         # (53.6) the added sound of a film not begun yet: the narrator's voice, the music - its kind, its
         # description, the user's own file (a path: sent once the film is begun)
@@ -174,7 +176,65 @@ class FilmView(QObject):
 
     @Property(bool, notify=changed)
     def canWrite(self) -> bool:
-        return bool(self._idea.strip()) and not self.busy
+        return bool(self._idea.strip()) and not self.busy and bool(self._writer())
+
+    # ---- who writes the script («Стабилизация» 2026-11-27: «во вкладке "Режиссёр" … нет выбора роли») ----
+
+    @Property(str, notify=changed)
+    def director(self) -> str:
+        """The model this film's script is written by; "" - the role «Режиссёр»'s."""
+        return str(self._film.get("director") or "") if self.hasFilm else self._director
+
+    def _writer(self) -> str:
+        """Who writes it now: the film's model while it is offered, else the role's; "" - nobody."""
+        chosen = self.director
+        return chosen if chosen in self.app.models else self.app.role_model("director")
+
+    @Property(str, notify=changed)
+    def directorName(self) -> str:
+        writer = self._writer()
+        return (self.app.models.get(writer) or {}).get("name") or writer if writer else tr("модель не выбрана")
+
+    @Property(list, notify=changed)
+    def directorItems(self) -> list:
+        """«Сценарий пишет»: the role's model first, then every model offered (Claude Code - an agent - not)."""
+        role = self.app.role_model("director")
+        named = (self.app.models.get(role) or {}).get("name", "")
+        chosen = self.director if self.director in self.app.models else ""
+        items = [{"id": "", "name": tr("Как в «Ролях»: {name}", name=named or tr("не выбрана")), "icon": "check",
+                  "note": tr("модель роли «Режиссёр»") if named else tr("роль «Режиссёр» в «Моделях» не выбрана"),
+                  "selected": not chosen}]  # fmt: skip
+        for model_id, model in self.app.models.items():
+            if model.get("provider") == "claude-code" or not model.get("enabled", True):
+                continue
+            sees = (model.get("capabilities") or {}).get("vision")
+            items.append({"id": model_id, "name": model.get("name") or model_id,
+                          "icon": "cloud" if model.get("locality") == "cloud" else "cpu",
+                          "note": tr("видит картинки") if sees else "", "selected": chosen == model_id})  # fmt: skip
+        return items
+
+    @Property(str, notify=changed)
+    def directorNote(self) -> str:
+        if not self._writer():
+            return tr("Выберите модель, которая напишет сценарий: ей уходят идея и фото товара. Снимает модель видео "
+                      "— сцена за сценой.")  # fmt: skip
+        cloud = (self.app.models.get(self._writer()) or {}).get("locality") == "cloud"
+        return tr("Модели уходят идея и фото товара{where}. Снимает модель видео — сцена за сценой.",
+                  where=tr(" — в облако") if cloud else "")  # fmt: skip
+
+    @Slot(str)
+    def setDirector(self, model_id: str) -> None:
+        """«Сценарий пишет»: a model, or "" - the role's. A film begun is told at once: its next script, and the look
+        at each scene filmed (51.4), are that model's."""
+        if (model_id and model_id not in self.app.models) or model_id == self.director or self.busy:
+            return
+        self._director = model_id
+        if self.hasFilm:
+            film_id = self._film["id"]
+            self._request(lambda: self.app.client.update_film(film_id, {"director": model_id}),
+                          N_("Модель сценария не выбрать: {error}"))  # fmt: skip
+        else:
+            self.changed.emit()
 
     @Property(str, notify=changed)
     def writeText(self) -> str:
@@ -593,6 +653,7 @@ class FilmView(QObject):
         self._shape = film.get("shape", "wide")
         self._joint = "fade" if film.get("fade") else "cut"
         self._checks = bool(film.get("checks", True))
+        self._director = str(film.get("director") or "")
         self._sound = bool(film.get("sound", True))
         self._voice, self._music = film.get("voice") or "", film.get("music") or ""
         self._music_words, self._music_path = film.get("music_words") or "", ""
@@ -814,7 +875,7 @@ class FilmView(QObject):
     def _write(self) -> None:
         client, film = self.app.client, self._film
         fields: dict[str, Any] = {"idea": self._idea.strip(), "seconds": int(self._length), "shape": self._shape,
-                                  "checks": self.checks, "sound": self.sound}  # fmt: skip
+                                  "checks": self.checks, "sound": self.sound, "director": self.director}  # fmt: skip
         if self._photo:
             fields["photo_png"] = self._photo["png"]
         elif self._no_photo:

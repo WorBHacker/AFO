@@ -812,7 +812,8 @@ class FakeClient:
         self.film_calls.append(("new", spec))
         film_id = f"f{len(self.films_list) + 1}"
         film = {"id": film_id, "idea": spec["idea"], "seconds": spec["seconds"], "shape": spec.get("shape", "wide"),
-                "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "", "director": "",
+                "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "",
+                "director": spec.get("director", ""),
                 "model_id": "", "status": "draft", "error": "", "file": "", "fade": 0.0, "tokens": 0,
                 "cost_usd": 0.0, "checks": spec.get("checks", True), "checking": 0,
                 "sound": spec.get("sound", True), "voice": spec.get("voice", ""), "music": spec.get("music", ""),
@@ -823,7 +824,7 @@ class FakeClient:
     def update_film(self, film_id, fields):
         self.film_calls.append(("update", film_id, fields))
         kept = {k: v for k, v in fields.items() if k in ("idea", "seconds", "shape", "fade", "checks", "sound",
-                                                         "voice", "music", "music_words")}  # fmt: skip
+                                                         "voice", "music", "music_words", "director")}  # fmt: skip
         if fields.get("music_path"):  # the user's own music: the hub keeps its copy beside the film
             kept |= {"music": "file", "music_file": f"2026-11/film-{film_id}-own-1.mp3"}
         return self._film(film_id, **kept)
@@ -11289,11 +11290,25 @@ def test_the_director_in_the_studio_makes_a_film_by_clicks(qapp, tmp_path):
         (tmp_path / "lamp.png").write_bytes(PICTURE)
         films.choosePhoto(QUrl.fromLocalFile(str(tmp_path / "lamp.png")).toString())  # the file dialog's answer
         window.grabWindow()
-        assert item_named(director, "filmPhotoShown").property("visible") and write.property("enabled")
+        # «Стабилизация» 2026-11-27 («нет выбора роли»): no role «Режиссёр» - the button waits for a model, and the
+        # tab itself has the choice
+        assert item_named(director, "filmPhotoShown").property("visible") and not write.property("enabled")
+        chip = item_named(director, "filmDirector")
+        assert chip.property("text") == "модель не выбрана"
+        assert item_named(director, "filmDirectorNote").property("text").startswith("Выберите модель, которая напишет")
+        click(window, chip)
+        menu = window.findChild(QObject, "filmDirectorMenu")
+        wait_until(lambda: menu.property("opened"))
+        assert [i["name"] for i in films.directorItems] == ["Как в «Ролях»: не выбрана", "Claude Opus 5.5", "Coder"]
+        click(window, item_saying(menu.property("contentItem"), "Coder"))
+        wait_until(lambda: not menu.property("visible"))
+        assert chip.property("text") == "Coder" and write.property("enabled")
+        assert item_named(director, "filmDirectorNote").property("text").startswith("Модели уходят идея и фото товара.")
         click(window, write)
         wait_until(lambda: not app.bg.busy and [c[0] for c in client.film_calls] == ["new", "write"])
         spec = client.film_calls[0][1]
         assert (spec["idea"], spec["seconds"], spec["shape"]) == ("Ролик о латунной лампе", 30, "tall")
+        assert spec["director"] == "llama-swap/coder"
         assert QImage.fromData(base64.b64decode(spec["photo_png"]), "PNG").size() == QSize(32, 32)
         film_id = client.films_list[0]["id"]
         media = app.paths.media / "2026-11"
@@ -11487,6 +11502,7 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
                               "scenes": film_scenes("done", "done", "done", "done",
                                                     s1={"say": "Тёплый свет для дома"},
                                                     s2={"say": "Включите — и светло"})}]  # fmt: skip
+        client.model_saved[""] = [{"roles": {"director": "llama-swap/coder"}}]  # who writes a new film's script
         for program in client.program_list:
             program["fresh"] = False  # the question about a new program would cover the Studio's top
         app.attach(client, start_events=False)
@@ -11681,11 +11697,13 @@ def test_the_directors_look_at_the_scenes_is_switched_by_a_click_and_said_in_the
                               "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
                               "tokens": 0, "cost_usd": 0.0, "checks": True, "checking": 0,
                               "scenes": film_scenes("new", "new", "new", "new")}]  # fmt: skip
+        client.model_saved[""] = [{"roles": {"director": "llama-swap/coder"}}]  # who writes a new film's script
         for program in client.program_list:
             program["fresh"] = False  # the question about a new program would cover the Studio's top
         app.attach(client, start_events=False)
         wait_until(lambda: not app.bg.busy)
         films = app.film_view
+        assert films.directorName == "Coder"  # the role's: «Как в «Ролях»»
         app.visual_view.open("")
         app.openUi("draw")
         wait_until(lambda: not app.bg.busy and films.available)

@@ -966,6 +966,7 @@ class Controller(QObject):
     def _set_roles(self, general: dict[str, Any]) -> None:
         """Which model does what (D39): a new chat, project cards, a new agent; the hub keeps the spare one."""
         self.roles = dict((general.get("settings") or {}).get("roles") or {})
+        self.modelChanged.emit()  # what names a role's model (the goal's judge, the film's director) - read anew
 
     def role_model(self, role: str) -> str:
         """The model of a role when it is offered now, else ''."""

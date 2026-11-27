@@ -72,6 +72,15 @@ Item {
         items: Films.filmChoices
         onChosen: (id) => Films.pick(id)
     }
+    MenuPopup {  // «Сценарий пишет»: the role's model, or another
+        id: directorMenu
+        objectName: "filmDirectorMenu"
+        menuWidth: 360
+        below: true
+        wrapNotes: true
+        items: Films.directorItems
+        onChosen: (id) => Films.setDirector(id)
+    }
     FileDialog {  // 53.6: the user's own music
         id: musicDialog
         title: qsTr("Файл музыки")
@@ -496,6 +505,15 @@ Item {
                     value: Films.shape
                     onPicked: (id) => Films.setShape(id)
                 }
+                Label { text: qsTr("Сценарий пишет") }
+                Chip {  // «Стабилизация» 2026-11-27: the model was chosen only in «Модели» → «Роли»
+                    id: directorChip
+                    objectName: "filmDirector"
+                    iconName: "sparkle"
+                    text: Films.directorName
+                    enabled: !Films.busy
+                    onClicked: { directorMenu.anchor = directorChip; directorMenu.open() }
+                }
                 PlainButton {
                     objectName: "filmWrite"
                     width: parent.width
@@ -506,7 +524,8 @@ Item {
                     onClicked: Films.state === "writing" ? Films.stop() : Films.write()
                 }
                 Note {
-                    text: qsTr("Сценарий пишет модель роли «Режиссёр» («Модели» → «Роли»); ей уходят идея и фото товара. Снимает модель видео — сцена за сценой.")
+                    objectName: "filmDirectorNote"
+                    text: Films.directorNote
                     color: Theme.p.faint
                 }
                 OnOff {
