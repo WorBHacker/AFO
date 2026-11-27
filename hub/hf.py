@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -47,6 +48,10 @@ RETRY_S = 1.0
 STEAL_AFTER_S = 2.0
 STEAL_MIN = 4 << 20
 STEAL_LOOK_S = 0.1
+# (2026-11-27) how often the list of pieces is written while pieces come: their bytes begun are kept for a hub killed
+MARK_S = 5.0
+
+log = logging.getLogger("hub.hf")
 PIECE_READ_S = 30.0  # a piece's connection silent this long is broken: asked again from where it stopped
 SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag", "gguf")
 INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "sha")
@@ -602,8 +607,14 @@ class _NoRanges(Exception):
     """The server sends the whole file whatever part is asked for: pieces cannot come apart."""
 
 
+def left_of(dest: Path) -> tuple[Path, ...]:
+    """What a download leaves beside its file until it is whole: the part, the list of its pieces, and that list's
+    next version on its way into place."""
+    return tuple(dest.with_name(dest.name + end) for end in (".part", ".parts", ".parts.new"))
+
+
 def _forget_pieces(dest: Path, progress: Progress) -> None:
-    for left in (dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")):
+    for left in left_of(dest):
         with contextlib.suppress(OSError):
             left.unlink()
     progress.hasher, progress.done, progress.pieces, progress.hashed = hashlib.sha256(), 0, set(), 0
@@ -621,21 +632,30 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
     part, marks = dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")
     count = -(-size // SEGMENT)
     if not progress.pieces:
-        progress.pieces = _pieces_on_disk(part, marks, size, count)
+        progress.pieces, begun = _pieces_on_disk(part, marks, size, count)
         progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in progress.pieces)
         progress.hasher, progress.hashed = hashlib.sha256(), 0
+        for index, got in begun.items():  # (2026-11-27) a new hub: the pieces begun go on from their bytes on disk
+            if index not in progress.pieces:
+                progress.partial[index] = max(progress.partial.get(index, 0), got)
     if not part.exists() or part.stat().st_size != size:
         # the list first: a part as long as the file and no list would read next time as one that came whole over one
         # connection - its zeros as pieces done (32.1)
-        marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
+        progress.partial.clear()  # a part made anew: no piece's bytes are on it
+        _mark(marks, progress.pieces, {}, must=True)
         with open(part, "ab") as f:
             f.truncate(size)
-        progress.partial.clear()  # a part made anew: no piece's bytes are on it
     lock, wake, stop = threading.Lock(), threading.Condition(), threading.Event()
     waiting = [i for i in range(count) if i not in progress.pieces]
     failed: list[BaseException] = []
     coming = progress.partial  # a piece begun -> its bytes on disk from its start; kept between tries (0.1.15 step 5)
     flying: dict[int, list[_Span]] = {}  # a piece on its way -> the connections' parts of it (the fix after 0.1.16)
+
+    def begun_now() -> dict[int, int]:  # under the lock: each piece begun - its bytes on disk from its start
+        return {
+            **{i: n for i, n in coming.items() if i not in flying},
+            **{i: _contiguous(i, parts, size) for i, parts in flying.items()},
+        }
 
     def next_span() -> _Span | None:  # under the lock: a piece waiting, or a part of a slow one
         if waiting:
@@ -672,13 +692,14 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
                         del flying[span.index]
                         progress.pieces.add(span.index)
                         coming.pop(span.index, None)
-                        marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
+                        _mark(marks, progress.pieces, begun_now())
                 with wake:
                     wake.notify()
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(PARTS, len(waiting)))]
     for t in threads:
         t.start()
+    marked = time.monotonic()
     try:
         with open(part, "rb", buffering=0) as f:  # no read-ahead: bytes past the pieces done are not there yet
             while True:
@@ -687,6 +708,9 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
                     on_way = sum(_on_disk(i, parts, size) for i, parts in flying.items()) + sum(
                         n for i, n in coming.items() if i not in flying)  # fmt: skip
                     progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in ready)
+                    if time.monotonic() - marked >= MARK_S:  # the pieces begun, for a hub killed meanwhile
+                        _mark(marks, progress.pieces, begun_now())
+                        marked = time.monotonic()
                 _shown(progress, report, progress.done + on_way)
                 upto = 0  # the bytes from the start that are on disk
                 while upto < count and upto in ready:
@@ -710,6 +734,8 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
             t.join()
         for index, parts in flying.items():  # a next try goes on from each piece's bytes on disk from its start
             coming[index] = _contiguous(index, parts, size)
+        if progress.hashed < size:  # stopped, broken, the hub going down: a new hub goes on from them too
+            _mark(marks, progress.pieces, coming)
     if failed:
         raise failed[0]
     if cancel.is_set() and progress.hashed < size:
@@ -719,8 +745,26 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
         raise HubError(tr("{file}: файл пришёл повреждённым (sha256 не совпал) — скачается заново", file=dest.name),
                        409)  # fmt: skip
     os.replace(part, dest)
-    with contextlib.suppress(OSError):
-        marks.unlink()
+    for left in left_of(dest)[1:]:
+        with contextlib.suppress(OSError):
+            left.unlink()
+
+
+def _mark(marks: Path, done: set[int], begun: dict[int, int], *, must: bool = False) -> None:
+    """The list of a part's pieces: the number of each one done, and [piece, bytes] for one begun - its bytes on disk
+    from its start (2026-11-27: kept only in the hub's memory, they came again from the piece's start after a restart,
+    up to 64 MB each). An older hub reads only the numbers. Written whole beside and put in its place: a hub killed
+    meanwhile leaves the list before, not half of one. `must` - the first list of a new part (32.1); later ones may
+    fail (an antivirus holding the file a moment): the next one is written soon, the download goes on."""
+    listed = [*sorted(done), *([i, n] for i, n in sorted(begun.items()) if n > 0 and i not in done)]
+    fresh = marks.with_name(marks.name + ".new")
+    try:
+        fresh.write_text(json.dumps(listed), encoding="utf-8")
+        os.replace(fresh, marks)
+    except OSError as exc:
+        if must:
+            raise
+        log.warning("the list of %s's pieces is not written now: %s", marks.name.removesuffix(".parts"), exc)
 
 
 def _span(index: int, size: int) -> tuple[int, int]:
@@ -728,20 +772,24 @@ def _span(index: int, size: int) -> tuple[int, int]:
     return index * SEGMENT, min((index + 1) * SEGMENT, size) - 1
 
 
-def _pieces_on_disk(part: Path, marks: Path, size: int, count: int) -> set[int]:
-    """The pieces an earlier try left: by its list - or, for a part that came over one connection, the whole pieces
-    from its start."""
+def _pieces_on_disk(part: Path, marks: Path, size: int, count: int) -> tuple[set[int], dict[int, int]]:
+    """The pieces an earlier try left - done, and begun with their bytes from their start: by its list - or, for a
+    part that came over one connection, the whole pieces from its start."""
     if not part.exists():
-        return set()
+        return set(), {}
     if marks.exists():
         try:
             listed = json.loads(marks.read_text(encoding="utf-8"))
             if part.stat().st_size == size and isinstance(listed, list):
-                return {i for i in listed if isinstance(i, int) and 0 <= i < count}
+                done = {i for i in listed if type(i) is int and 0 <= i < count}
+                begun = {e[0]: e[1] for e in listed if isinstance(e, list) and len(e) == 2
+                         and all(type(v) is int for v in e) and 0 <= e[0] < count and e[0] not in done
+                         and 0 < e[1] < _span(e[0], size)[1] - _span(e[0], size)[0] + 1}  # fmt: skip
+                return done, begun
         except OSError, ValueError:
             pass
-        return set()
-    return set(range(min(part.stat().st_size, size) // SEGMENT))
+        return set(), {}
+    return set(range(min(part.stat().st_size, size) // SEGMENT)), {}
 
 
 @dataclass
@@ -833,6 +881,7 @@ def _piece(http: httpx.Client, url: str, part: Path, span: _Span, token: str | N
                         with lock:  # still its own: the end may have come down meanwhile
                             room = span.left
                         f.write(chunk[:room])
+                        f.flush()  # with the system before it is counted: the list never names bytes not there
                         with lock:
                             span.got += min(len(chunk), room)
                             span.moved = time.monotonic()

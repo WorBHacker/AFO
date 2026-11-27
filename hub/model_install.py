@@ -2785,7 +2785,7 @@ def _without_lost_drafts(text: str) -> tuple[str, list[str]]:
 
 def _delete_draft(path: Path) -> None:
     """A draft's file and what is left of its download."""
-    for each in (path.with_name(path.name + ".part"), path.with_name(path.name + ".parts")):
+    for each in hf.left_of(path):
         each.unlink(missing_ok=True)
     path.unlink(missing_ok=True)
 
@@ -2958,7 +2958,7 @@ def _delete_files(found: dict[str, Any], kept: set[str] | frozenset[str] = froze
         dest = _dest(folder, f)
         if _key(dest) in kept:
             continue
-        for path in (dest, dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")):
+        for path in (dest, *hf.left_of(dest)):
             for _ in range(10):  # a server that just let go of the file: Windows may hold it a moment longer
                 try:
                     path.unlink(missing_ok=True)

@@ -609,13 +609,13 @@ def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_pa
 
     def stop_once_a_piece_is_done(_n):  # the user stops it (or the hub goes down) half way
         with contextlib.suppress(OSError, ValueError):  # the list is there from the start (32.1), a piece in it later
-            if json.loads(marks.read_text(encoding="utf-8")):
+            if any(type(i) is int for i in json.loads(marks.read_text(encoding="utf-8"))):  # [piece, bytes] - begun
                 cancel.set()
 
     with pytest.raises(hf.Cancelled):
         hf.download(url, later, size=len(data), sha256=digest, token=None, report=stop_once_a_piece_is_done,
                     cancel=cancel)  # fmt: skip
-    done = json.loads(marks.read_text(encoding="utf-8"))
+    done = [i for i in json.loads(marks.read_text(encoding="utf-8")) if type(i) is int]
     assert (tmp_path / "two.gguf.part").stat().st_size == len(data) and 0 < len(done) < 5
     FakeHub.spans.clear()
     FakeHub.slow = 0.0
@@ -624,6 +624,54 @@ def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_pa
     assert later.read_bytes() == data and not marks.exists()
     asked = {s // (64 * 1024) for _, s, _ in FakeHub.spans}
     assert asked == set(range(5)) - set(done)  # only the pieces that were not there
+
+
+def test_a_piece_begun_goes_on_after_a_restart_from_its_bytes(fake_hub, pieces, tmp_path, monkeypatch):
+    """«Стабилизация», found making the 0.1.15 plan (2026-11-27): after a hub restart the pieces begun came again from
+    their start - their bytes on disk were kept only in the old hub's memory (up to 64 MB a piece in life). Now the list
+    of pieces names each begun piece with its bytes from its start, written while they come (for a hub killed
+    meanwhile) and when stopped: a new hub asks only for the rest of each, and its number starts from them."""
+    monkeypatch.setattr(hf, "CHUNK", 8_192)  # with 1 MiB httpx holds a 64 KB piece whole
+    monkeypatch.setattr(hf, "MARK_S", 0.05)
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"  # five pieces of 64 KB, four at once
+    data = FILES[name]
+    url, digest = hf.file_url("test/Tiny-GGUF", name), hashlib.sha256(data).hexdigest()
+    FakeHub.slow = 0.1  # 16 KB each 0.1 s: a piece ~0.4 s
+    cancel, dest = threading.Event(), tmp_path / "begun.gguf"
+    marks = tmp_path / "begun.gguf.parts"
+    seen_begun: list = []
+
+    def stop_once_the_list_names_a_begun_piece(_n):  # the hub going down while pieces come
+        with contextlib.suppress(OSError, ValueError):
+            if any(isinstance(e, list) and e[1] >= 16_384 for e in json.loads(marks.read_text(encoding="utf-8"))):
+                seen_begun.append(True)  # written while they came, before any stop
+                cancel.set()
+
+    with pytest.raises(hf.Cancelled):
+        hf.download(url, dest, size=len(data), sha256=digest, token=None,
+                    report=stop_once_the_list_names_a_begun_piece, cancel=cancel)  # fmt: skip
+    assert seen_begun
+    listed = json.loads(marks.read_text(encoding="utf-8"))
+    done = {i for i in listed if type(i) is int}
+    begun = {e[0]: e[1] for e in listed if isinstance(e, list)}
+    assert begun and all(0 < n < 64 * 1024 and n % 8_192 == 0 for n in begun.values()), listed
+    on_disk = (tmp_path / "begun.gguf.part").read_bytes()
+    for index, n in begun.items():  # the list names only bytes that are there
+        start = index * 64 * 1024
+        assert on_disk[start : start + n] == data[start : start + n], index
+
+    FakeHub.spans.clear()
+    FakeHub.slow = 0.0
+    seen = []
+    hf.download(url, dest, size=len(data), sha256=digest, token=None, report=seen.append,
+                cancel=threading.Event())  # a new hub: a new Progress, read from the list  # fmt: skip
+    assert dest.read_bytes() == data and not marks.exists() and not (tmp_path / "begun.gguf.parts.new").exists()
+    starts = {s for _, s, _ in FakeHub.spans}
+    for index, n in begun.items():
+        assert index * 64 * 1024 + n in starts and index * 64 * 1024 not in starts, (index, n, FakeHub.spans)
+    assert {s // (64 * 1024) for s in starts} == set(range(5)) - done
+    whole = sum(min(64 * 1024, len(data) - i * 64 * 1024) for i in done)
+    assert seen[0] >= whole + sum(begun.values())  # the number starts from what is on disk
 
 
 def test_a_broken_piece_goes_on_from_where_it_broke(fake_hub, pieces, tmp_path, monkeypatch):
