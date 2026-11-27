@@ -220,6 +220,10 @@ class GoalView(QObject):
         self._checks: list[dict[str, Any]] = []
         self._steering: list[dict[str, Any]] = []
         self._checking = ""  # "", "commands", "judge": what the hub is doing between turns
+        # «Стабилизация» 2026-11-27 («окно "Цели" не обновляется в реальном времени»): the turn at work (0 - none)
+        # and what its start waits for ("card" - other work without the person on the graphics card), as the hub
+        # says; the latest load asked - an older answer coming after it is not shown
+        self._running, self._waiting, self._asked = 0, "", 0
         self._expanded = False
         self._dismissed: set[str] = set()  # met goals the user put away
         self._editor = blank_editor()
@@ -245,6 +249,10 @@ class GoalView(QObject):
             return tr("проверяет модель")
         if self._checking:
             return tr("проверка")
+        if self.status == "active" and self._waiting:
+            return tr("ждёт видеокарту")
+        if self.status == "active" and self._running:
+            return tr("идёт ход {n}", n=self._running)
         return tr(STATUS[self.status]) if self.status in STATUS else ""
 
     @Property(str, notify=changed)
@@ -254,6 +262,8 @@ class GoalView(QObject):
     @Property(str, notify=changed)
     def detail(self) -> str:
         """Why it waits or stopped, as the hub says."""
+        if self.status == "active" and self._waiting == "card":
+            return tr("на видеокарте другая работа без вас — ход начнётся после неё")
         return (self._goal or {}).get("detail", "") if self.status != "active" else ""
 
     @Property(str, notify=changed)
@@ -319,19 +329,24 @@ class GoalView(QObject):
 
     def load(self) -> None:
         cid = self.app.current or ""
+        self._asked += 1
+        asked = self._asked
         if self.app.client is None or not cid:
-            self._show(cid, {"goal": None, "checks": [], "steering": []})
+            self._show(cid, {"goal": None, "checks": [], "steering": []}, asked)
             return
-        self.app._call(lambda: self.app.client.goal(cid), lambda data: self._show(cid, data), lambda _e: None)
+        self.app._call(lambda: self.app.client.goal(cid), lambda data: self._show(cid, data, asked), lambda _e: None)
 
-    def _show(self, cid: str, data: dict[str, Any]) -> None:
-        if cid != (self.app.current or ""):
+    def _show(self, cid: str, data: dict[str, Any], asked: int) -> None:
+        if cid != (self.app.current or "") or asked != self._asked:  # another chat, or a newer answer is coming
             return
         if cid != self._conversation:
             self._expanded = False
+            self._running, self._waiting = 0, ""
         self._conversation, self._goal = cid, data.get("goal")
         self._checks, self._steering = data.get("checks") or [], data.get("steering") or []
         self._checking = "commands" if data.get("checking") else ""
+        if self.status != "active":
+            self._running, self._waiting = 0, ""
         self.changed.emit()
 
     def _act(self, call, said: str) -> None:
@@ -392,14 +407,20 @@ class GoalView(QObject):
                 self.app.flash(tr("{notice}: «{objective}»", notice=notice, objective=goal.get("objective", "")[:60]))
         if cid != (self.app.current or ""):
             return
-        if kind == "goal.checking":
-            self._checking = "commands"
+        if kind == "goal.turn":  # a turn began: no check now, nothing waited for
+            self._checking, self._waiting, self._running = "", "", int(payload.get("turn") or 0)
+        elif kind == "goal.waiting":
+            self._waiting = str(payload.get("why") or "")
             self.changed.emit()
+            return
+        elif kind == "goal.checking":  # the turn ended: its count is in, its check runs
+            self._checking, self._running = "commands", 0
         elif kind == "goal.judging":
             self._checking = "judge"
             self.changed.emit()
-        else:
-            self.load()
+            return
+        self.changed.emit()
+        self.load()
 
     # ---------- the contract card ----------
 

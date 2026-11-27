@@ -164,6 +164,56 @@ def test_the_hubs_notes_are_quiet_lines():
     assert found[1]["title"] == "Хаб → модели: напоминание" and rows.restyled(found[0]) == found[0]
 
 
+def test_the_goal_bar_says_the_turn_at_work_what_it_waits_for_and_keeps_no_stale_check(qapp):  # noqa: F811
+    """«Стабилизация» 2026-11-27, «окно "Цели" не обновляется в реальном времени»: a turn begun - «идёт ход 4» at
+    once, the check's «проверка» gone; its start waiting for the graphics card - «ждёт видеокарту» and why; the turn
+    ended - «проверка», then the goal as the hub has it; an answer of the hub that comes after a newer one's is not
+    shown; the hub met again - the goal is read anew."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = GoalClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        view = app.goal_view
+        client.goal_data = {"goal": copy.deepcopy(GOAL), "checks": [CHECK], "steering": [], "checking": True}
+        view.load()
+        wait_until(lambda: not app.bg.busy and view.shown)
+        assert view.statusText == "проверка"
+        client.goal_data["checking"] = False
+        begun = {"conversation_id": "c1", "goal_id": "g1", "turn": 4}
+        app.on_event({"type": "goal.turn", "payload": begun})
+        assert view.statusText == "идёт ход 4"  # at once, before the hub's answer
+        wait_until(lambda: not app.bg.busy)
+        assert view.statusText == "идёт ход 4" and view.detail == ""
+        app.on_event({"type": "goal.waiting", "payload": {"conversation_id": "c1", "goal_id": "g1", "why": "card"}})
+        assert view.statusText == "ждёт видеокарту"
+        assert view.detail == "на видеокарте другая работа без вас — ход начнётся после неё"
+        app.on_event({"type": "goal.turn", "payload": {**begun, "turn": 5}})
+        assert view.statusText == "идёт ход 5" and view.detail == ""
+        client.goal_data["checking"] = True
+        app.on_event({"type": "goal.checking", "payload": {"conversation_id": "c1", "goal_id": "g1"}})
+        assert view.statusText == "проверка"
+        wait_until(lambda: not app.bg.busy)
+        client.goal_data["checking"] = False
+        app.on_event({"type": "goal.check", "payload": {"conversation_id": "c1", "goal_id": "g1"}})
+        wait_until(lambda: not app.bg.busy and view.statusText == "идёт")
+
+        asked = view._asked  # an answer asked for before the last one, coming after it
+        view.load()
+        wait_until(lambda: not app.bg.busy)
+        view._show("c1", {"goal": {**GOAL, "status": "paused"}, "checks": [], "steering": []}, asked)
+        assert view.status == "active"
+        client.goal_data["goal"]["status"] = "paused"
+        app.reload_all()  # the hub met again: the same chat, its goal read anew
+        wait_until(lambda: not app.bg.busy and view.status == "paused")
+    finally:
+        quick.close()
+
+
 def test_the_goal_in_the_window(qapp):  # noqa: F811
     from app.ui.main import QuickApp
 

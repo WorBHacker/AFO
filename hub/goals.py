@@ -936,6 +936,7 @@ class Goals:
         self._laned: set[str] = set()  # chats whose goal's turn holds the card's queue (61.8) till the turn ends
         self._later: set[asyncio.Task] = set()  # goals' turns waiting in that queue
         self._folded: dict[str, tuple[str, int]] = {}  # chat -> (its goal, the message its request folds to: compact)
+        self._checking: set[str] = set()  # chats whose goal's check runs now (`get`)
 
     async def start(self) -> list[str]:
         """Goals the last hub left at work go on (D16): each active one gets its next turn."""
@@ -958,7 +959,9 @@ class Goals:
             return {"goal": goal, "checks": checks(conn, goal["id"]), "steering": steering(conn, goal["id"])}
 
         found = await self._db.acall(read)
-        found["checking"] = conversation_id in self._locks and self._locks[conversation_id].locked()
+        # the check itself, not the turn it starts after it - the window's «проверка» stood through that turn
+        # («Стабилизация» 2026-11-27, «окно "Цели" не обновляется в реальном времени»)
+        found["checking"] = conversation_id in self._checking
         return found
 
     async def set(self, conversation_id: str, data: dict[str, Any], *, by: str) -> dict[str, Any]:
@@ -1138,73 +1141,85 @@ class Goals:
         self._free_lane(conversation_id)  # its turn's place in the card's queue: the next one's (61.8)
         lock = self._locks.setdefault(conversation_id, asyncio.Lock())
         async with lock:
-            goal = await self._db.acall(lambda conn: goal_of(conn, conversation_id))
-            mine = conversation_id in self._counted
-            self._counted.discard(conversation_id)
-            turn = self._chat.guards.pop(conversation_id, None) if mine else None  # its tries at the constraints
-            began = self._began.pop(conversation_id, None) if mine else None  # its projects' trees then (21.1)
-            if goal is None and mine:  # cleared while its turn ran: the turn still counts
-                goal = await self._db.acall(lambda conn: latest_goal(conn, conversation_id))
-            if goal is None or not (goal["status"] == "active" or mine):
-                return  # no goal, or the user chatted while it waited: not the goal's turn
-            goal = await self._count(goal, outcome)
-            if goal["status"] != "active":
+            try:
+                await self._turn_ended(conversation_id, outcome)
+            finally:
+                self._checking.discard(conversation_id)
+
+    async def _turn_ended(self, conversation_id: str, outcome: Outcome) -> None:
+        """`turn_ended`, under the chat's lock: what the turn used is said at once (`goal.counted`), the check
+        runs between `goal.checking` and its `goal.check`."""
+        goal = await self._db.acall(lambda conn: goal_of(conn, conversation_id))
+        mine = conversation_id in self._counted
+        self._counted.discard(conversation_id)
+        turn = self._chat.guards.pop(conversation_id, None) if mine else None  # its tries at the constraints
+        began = self._began.pop(conversation_id, None) if mine else None  # its projects' trees then (21.1)
+        if goal is None and mine:  # cleared while its turn ran: the turn still counts
+            goal = await self._db.acall(lambda conn: latest_goal(conn, conversation_id))
+        if goal is None or not (goal["status"] == "active" or mine):
+            return  # no goal, or the user chatted while it waited: not the goal's turn
+        goal = await self._count(goal, outcome)
+        # its turns, tokens and minutes - said when the goal was paused or cleared meanwhile too
+        await self._bus.publish("goal.counted", {"conversation_id": conversation_id, "goal_id": goal["id"]},
+                                persist=False)  # fmt: skip
+        if goal["status"] != "active":
+            return
+        if outcome.status == "cancelled":
+            await self._checked(goal, "paused", None, {}, tr("остановлено: ход прерван"))
+            return
+        if outcome.status == "error" and outcome.subscription is not None:  # the subscription's limit (20.3)
+            await self._checked(goal, "paused", None, {}, limit_words(outcome.subscription),
+                                subscription=outcome.subscription)  # fmt: skip
+            return
+        if outcome.status == "error" and not outcome.limited:
+            await self._checked(goal, "blocked", None, {}, tr("ход не удался: {error}", error=outcome.detail))
+            return
+        if goal["investigating"]:  # the investigator's turn (11.4): nothing could change, nothing is run
+            await self._db.acall(lambda conn: conn.execute("UPDATE goals SET investigating = 0 WHERE id = ?",
+                                                           (goal["id"],)))  # fmt: skip
+            last = await self._db.acall(lambda conn: checks(conn, goal["id"], 1))
+            found = _found_of(last[0]) if last else {"results": [], "verdict": None}
+            await self._go_on({**goal, "investigating": 0}, None, found, head=INVESTIGATED, route="investigated",
+                              detail=tr("причину искали — дальше правка"), kept={})  # fmt: skip
+            return
+        if turn is not None and len(turn.refused) >= guard.TRIES:
+            tried = "; ".join(dict.fromkeys(r.split("«", 1)[-1].split("»", 1)[0] for r in turn.refused))
+            said = tr("{n} попытки нарушить ограничения за ход: {rules}", n=len(turn.refused), rules=tried)
+            await self._checked(goal, "blocked", None, {}, said + tr(ASK_PERSON))
+            return
+        self._checking.add(conversation_id)
+        await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
+                                persist=False)  # fmt: skip
+        changed = await self._changed(conversation_id, began or {})  # before the checks' commands run
+        results = await self.run_checks(goal)
+        found = await self.contour(goal, results)
+        found["turn_files"] = changed
+        if (stage := await self._stage(goal, found)) is not None:  # «STAGE DONE» (11.5)
+            found["stage"] = stage
+        goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
+        verdict = found["verdict"]
+        if verdict == "ACHIEVED":
+            await self._checked(goal, "achieved", "ACHIEVED", found, found["detail"])
+            return
+        if found.get("blocked"):
+            await self._checked(goal, "blocked", verdict, found, found["blocked"])
+            return
+        if verdict == "REGRESSED" and await self._regressed_before(goal):
+            await self._checked(goal, "blocked", verdict, found, tr(REGRESSED_AGAIN) + tr(ASK_PERSON))
+            return
+        # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
+        extra = _problems(found)
+        mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
+        history = await self._history(goal)
+        edited, edits = guard.thrashing(history, mark[1], found["turn_files"])
+        accepted = (found.get("stage") or {}).get("accepted")  # a stage done is progress (19.1)
+        loop = None if accepted else guard.signal(history, mark[0], mark[1], edits, edited)
+        if loop is not None and loop[0] == "blocked":
+            if await self._back(goal, verdict, found, mark, loop[1]):  # a dead end: a checkpoint (11.6)
                 return
-            if outcome.status == "cancelled":
-                await self._checked(goal, "paused", None, {}, tr("остановлено: ход прерван"))
-                return
-            if outcome.status == "error" and outcome.subscription is not None:  # the subscription's limit (20.3)
-                await self._checked(goal, "paused", None, {}, limit_words(outcome.subscription),
-                                    subscription=outcome.subscription)  # fmt: skip
-                return
-            if outcome.status == "error" and not outcome.limited:
-                await self._checked(goal, "blocked", None, {}, tr("ход не удался: {error}", error=outcome.detail))
-                return
-            if goal["investigating"]:  # the investigator's turn (11.4): nothing could change, nothing is run
-                await self._db.acall(lambda conn: conn.execute("UPDATE goals SET investigating = 0 WHERE id = ?",
-                                                               (goal["id"],)))  # fmt: skip
-                last = await self._db.acall(lambda conn: checks(conn, goal["id"], 1))
-                found = _found_of(last[0]) if last else {"results": [], "verdict": None}
-                await self._go_on({**goal, "investigating": 0}, None, found, head=INVESTIGATED, route="investigated",
-                                  detail=tr("причину искали — дальше правка"), kept={})  # fmt: skip
-                return
-            if turn is not None and len(turn.refused) >= guard.TRIES:
-                tried = "; ".join(dict.fromkeys(r.split("«", 1)[-1].split("»", 1)[0] for r in turn.refused))
-                said = tr("{n} попытки нарушить ограничения за ход: {rules}", n=len(turn.refused), rules=tried)
-                await self._checked(goal, "blocked", None, {}, said + tr(ASK_PERSON))
-                return
-            await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
-                                    persist=False)  # fmt: skip
-            changed = await self._changed(conversation_id, began or {})  # before the checks' commands run
-            results = await self.run_checks(goal)
-            found = await self.contour(goal, results)
-            found["turn_files"] = changed
-            if (stage := await self._stage(goal, found)) is not None:  # «STAGE DONE» (11.5)
-                found["stage"] = stage
-            goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
-            verdict = found["verdict"]
-            if verdict == "ACHIEVED":
-                await self._checked(goal, "achieved", "ACHIEVED", found, found["detail"])
-                return
-            if found.get("blocked"):
-                await self._checked(goal, "blocked", verdict, found, found["blocked"])
-                return
-            if verdict == "REGRESSED" and await self._regressed_before(goal):
-                await self._checked(goal, "blocked", verdict, found, tr(REGRESSED_AGAIN) + tr(ASK_PERSON))
-                return
-            # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
-            extra = _problems(found)
-            mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
-            history = await self._history(goal)
-            edited, edits = guard.thrashing(history, mark[1], found["turn_files"])
-            accepted = (found.get("stage") or {}).get("accepted")  # a stage done is progress (19.1)
-            loop = None if accepted else guard.signal(history, mark[0], mark[1], edits, edited)
-            if loop is not None and loop[0] == "blocked":
-                if await self._back(goal, verdict, found, mark, loop[1]):  # a dead end: a checkpoint (11.6)
-                    return
-                await self._checked(goal, "blocked", verdict, found, loop[1] + tr(ASK_PERSON), mark)
-                return
-            await self._go_on(goal, verdict, found, mark=mark, investigate=loop[1] if loop else "")
+            await self._checked(goal, "blocked", verdict, found, loop[1] + tr(ASK_PERSON), mark)
+            return
+        await self._go_on(goal, verdict, found, mark=mark, investigate=loop[1] if loop else "")
 
     async def _stage(self, goal: dict[str, Any], found: dict[str, Any]) -> dict[str, Any] | None:
         """The worker said «STAGE DONE» this turn (11.5): the stage at work is done when the hub's own check found
@@ -1643,6 +1658,7 @@ class Goals:
             return checks(conn, goal["id"], 1)[0] if cur.lastrowid else None
 
         check = await self._db.acall(write)
+        self._checking.discard(goal["conversation_id"])  # checked: the window reads it so from here on
         await self._bus.publish("goal.check", {"conversation_id": goal["conversation_id"], "goal_id": goal["id"],
                                                "check": check})  # fmt: skip
         status = {"achieved": "achieved", "blocked": "blocked", "budget": "budget", "paused": "paused"}.get(route)
@@ -1684,6 +1700,8 @@ class Goals:
             lane = self._chat.card.lane
             if lane.locked():
                 log.info("goal %s waits for the card: other work without the person is on it", goal["id"])
+                await self._bus.publish("goal.waiting", {"conversation_id": conversation_id, "goal_id": goal["id"],
+                                                         "why": "card"}, persist=False)  # fmt: skip
                 waiting = asyncio.create_task(self._turn_later(goal["id"], note, hard))
                 self._later.add(waiting)
                 waiting.add_done_callback(self._later.discard)
@@ -1731,6 +1749,9 @@ class Goals:
                                                                  bool(goal["investigating"]))  # fmt: skip
             await self._chat.go_on(conversation_id, model_id, note, effort=goal["effort"],
                                    limits=Limits(max_steps=TURN_STEPS), mark=mark)  # fmt: skip
+            await self._bus.publish("goal.turn", {"conversation_id": conversation_id, "goal_id": goal["id"],
+                                                  "turn": goal["turns_used"] + 1, "model_id": model_id},
+                                    persist=False)  # fmt: skip  # the window: which turn is at work now
         except GatewayError as exc:
             self._free_lane(conversation_id)
             self._counted.discard(conversation_id)

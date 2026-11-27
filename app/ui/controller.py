@@ -826,6 +826,7 @@ class Controller(QObject):
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         if self.current:
             self.openChat(self.current)
+            self.goal_view.load()  # the same chat again is no change of it: its goal is read anew here
 
     # ---------- what the hub keeps on disk (D30, 2026-10-28) ----------
 

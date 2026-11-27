@@ -294,6 +294,33 @@ def test_an_answer_cut_off_in_its_tool_call_is_told_so_and_goes_on(hub, repo):  
     assert len(tool_outputs(hub, conv)) == 1  # only the call that came whole ran
 
 
+def test_the_window_hears_each_turn_begin_and_end_and_the_check_ends_with_its_word(hub, repo, monkeypatch):  # noqa: F811
+    """«Стабилизация» 2026-11-27, «окно "Цели" не обновляется в реальном времени»: the hub said nothing when a turn
+    began, nor what it had used when the goal was paused meanwhile; and the window read «проверка» while the next
+    turn ran - the check's word came under the lock that starts that turn, and `checking` was the lock. Now each turn
+    is told as it begins (its number) and as it is counted; `checking` is the check itself."""
+    told = []
+    real, goals_ = hub.app.state.bus.publish, hub.app.state.goals
+
+    async def record(kind, payload, *args, **kwargs):
+        if kind.startswith("goal."):
+            told.append((kind, payload.get("turn")))
+            if kind == "goal.check":  # what the window reads when it hears it
+                told.append(("checking", (await goals_.get(payload["conversation_id"]))["checking"]))
+        return await real(kind, payload, *args, **kwargs)
+
+    monkeypatch.setattr(hub.app.state.bus, "publish", record)
+    worker = use(hub, Gated("agent", ["Смотрю, с чего начать.", WRITE, "Записал done.txt."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv)
+    settled(hub, conv, "achieved")
+    shown = [(k, t) for k, t in told if k in ("goal.turn", "goal.counted", "goal.checking", "goal.check", "checking")]
+    assert shown == [("goal.turn", 1), ("goal.counted", None), ("goal.checking", None), ("goal.check", None),
+                     ("checking", False), ("goal.turn", 2), ("goal.counted", None), ("goal.checking", None),
+                     ("goal.check", None), ("checking", False)]  # fmt: skip
+    assert not goal(hub, conv)["checking"]
+
+
 def test_a_goals_old_turns_fold_before_its_window_fills(hub, repo):  # noqa: F811
     """«Стабилизация» 2026-11-27, the user's word: «сделать compact перед заполнением чата … уже выполненых частей
     типа 2 шага назад очистить их кеш и контекст». A goal whose request would take FOLD_AT of the model's room goes
