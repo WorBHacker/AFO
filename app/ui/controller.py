@@ -2077,7 +2077,9 @@ class Controller(QObject):
             return
         if self.messages.rows[index]["segments"]:
             self._errors += 1
-            self.messages.update(index, key=f"cut{self._errors}", streaming=False, notice="")
+            text = self.messages.rows[index]["markdown"]
+            whole = {"segments": rows.segments(text)} if rows.streaming(text) != text else {}  # its held «-» too
+            self.messages.update(index, key=f"cut{self._errors}", streaming=False, notice="", **whole)
         else:
             self.messages.remove(index)
 
@@ -2117,7 +2119,7 @@ class Controller(QObject):
             )
         if run.text != self.messages.rows[index]["markdown"]:
             changes["markdown"] = run.text
-            changes["segments"] = rows.segments(run.text)
+            changes["segments"] = rows.segments(rows.streaming(run.text))  # a heading's «-» waits for its next word
         self.messages.update(index, **changes)
         if run.thinking and not self._think_timer.isActive():
             self._think_timer.start()

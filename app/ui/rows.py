@@ -15,6 +15,16 @@ from common.plain_errors import explain
 from .. import palette, presenter
 from ..render import Code, highlight_code, language_label, page, render_plain, render_segments
 
+# a last line of «-» or «=» alone: under a line of words markdown makes that paragraph a heading (setext)
+UNDERLINE = re.compile(r"\n {0,3}(?:-+|=+)[ \t]*$")
+
+
+def streaming(markdown: str) -> str:
+    """An answer as it streams, for its pieces: a last line of only «-» or «=» waits for the next word
+    («Стабилизация» 2026-11-27, «слова в абзаце растут»: «Вот варианты:\\n-» made the paragraph a heading - 125 % -,
+    and «- первый» a paragraph and a list again). The answer ended, it is read whole."""
+    return UNDERLINE.sub("", markdown)
+
 
 def segments(markdown: str) -> list[dict[str, str]]:
     """An answer as pieces for QML: prose HTML, and code blocks with their language, coloured HTML and raw text.
@@ -582,7 +592,8 @@ def message_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, A
 def restyled(row: dict[str, Any]) -> dict[str, Any]:
     """The same row with its HTML rendered in the current theme."""
     if row["role"] == "assistant":
-        return {**row, "segments": segments(row["markdown"])}
+        text = row["markdown"]
+        return {**row, "segments": segments(streaming(text) if row.get("streaming") else text)}
     if row["role"] == "hub":
         return row
     return {**row, "html": page(render_plain(row["text"]))}

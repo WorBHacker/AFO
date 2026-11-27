@@ -2111,6 +2111,34 @@ def test_the_answer_after_a_tool_step_keeps_its_model(app):
     assert live["author"] == "Coder" and live["local"]
 
 
+def test_a_paragraphs_words_keep_their_size_while_the_answer_streams(app):
+    """«Стабилизация» 2026-11-27, «слова в абзаце растут»: a piece of an answer ending in a line of «-» or «=» alone -
+    «Вот варианты:\\n-» - is a heading in markdown (setext): the paragraph's words grew to 125 % and, with «- первый»,
+    went back. While it streams that line waits for its next word; a heading written so stays one once the answer is
+    there whole, and an answer cut off keeps its last line."""
+    opened(app)
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+
+    def shown():
+        app._render_live()
+        return "".join(s["html"] for s in app.messages.rows[app.messages.find("live")]["segments"])
+
+    for piece, heading in (("Вот варианты:\n-", "<h2"), ("Итог\n=", "<h1"), ("Итог\n  ---  ", "<h2")):
+        app.live[app.current].text = piece
+        html = shown()
+        assert heading not in html and ("Вот варианты:" in html or "Итог" in html), (piece, html)
+    app.live[app.current].text = "Вот варианты:\n- первый\n- второй"
+    html = shown()
+    assert "<h2" not in html and "<li" in html and "первый" in html
+    live = {**app.messages.rows[app.messages.find("live")], "markdown": "Итог\n="}  # a theme switch meanwhile
+    assert live["streaming"] and "<h1" not in "".join(s["html"] for s in rows.restyled(live)["segments"])
+    assert "<h1" in rows.segments("Итог\n=")[0]["html"]  # whole: a heading
+    app.live[app.current].text = "Итог\n="
+    shown()
+    app._drop_live_row()  # cut off: what came stays, whole
+    assert "<h1" in app.messages.rows[-1]["segments"][0]["html"]
+
+
 def test_parallel_calls_each_get_their_result(app):
     """Claude Code stores parallel calls as separate messages; one tool message answers them all, by id."""
 
