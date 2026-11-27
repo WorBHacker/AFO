@@ -37,9 +37,12 @@ async def _state(request: Request) -> dict:
     await autostart.find_running(state.db, state.settings.llama_swap_url)  # a llama-swap started since: its paths
     script = autostart.llama_swap_script()
     config = llama_config.config_path()
+    other = autostart.login_other(state.run_store.get())  # another AFO copy starts at login (2026-11-27)
     return {
         "login": autostart.login_enabled(state.run_store),
         "login_command": autostart.login_command(),
+        "login_other": str(other) if other is not None else "",
+        "login_other_gone": other is not None and not other.is_dir(),
         "llama_swap": await state.db.acall(autostart.llama_swap_wanted),
         "llama_swap_script": str(script),
         "llama_swap_found": script.is_file(),

@@ -141,7 +141,40 @@ def login_command() -> str:
 
 
 def login_enabled(store: RunStore) -> bool:
-    return bool(store.get())
+    """AFO starts at login - this copy of it (2026-11-27): a value that runs another copy is not «on» here."""
+    value = store.get()
+    return bool(value) and login_other(value) is None
+
+
+def login_program(value: str) -> Path:
+    """The program a login value runs: its first part, in quotes or not."""
+    value = value.strip()
+    if value.startswith('"'):
+        return Path(value[1:].split('"', 1)[0])
+    return Path(value.split(" ", 1)[0])
+
+
+def copy_folder(program: Path) -> Path:
+    """The AFO copy a Python belongs to: <copy>\\python\\pythonw.exe (installed), <copy>\\.venv\\Scripts\\pythonw.exe (a
+    checkout)."""
+    folder = program.parent
+    if folder.name.lower() == "scripts":
+        folder = folder.parent
+    return folder.parent if folder.name.lower() in ("python", ".venv", "venv") else folder
+
+
+def login_other(value: str | None) -> Path | None:
+    """The folder of another AFO copy the login value runs - None: none set, or it is this one (python.exe and
+    pythonw.exe beside it are one copy). The user's word 2026-11-27, «создаёт в трей ещё одну afo»: the value ran the
+    development folder's copy - its own data, lock and tray icon - and the installed AFO, opened later, was a second;
+    its switch said «on», as it said for any value."""
+    if not value:
+        return None
+    theirs = login_program(value).parent
+    ours = Path(sys.executable).parent
+    if os.path.normcase(os.path.abspath(theirs)) == os.path.normcase(os.path.abspath(ours)):
+        return None
+    return copy_folder(login_program(value))
 
 
 def set_login(store: RunStore, on: bool) -> None:

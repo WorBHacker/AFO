@@ -41,6 +41,7 @@ Sheet {
             checked: !!App.autostart.login
             onToggled: App.setAutostart("login", checked)
         }
+        LoginElsewhere { width: tray.width }
         Note { text: qsTr("«Выход» в меню трея останавливает всё: окно, хаб, модели и llama-swap, который запускает AFO.") }
         SectionTitle { text: qsTr("В меню трея") }
         Flow {

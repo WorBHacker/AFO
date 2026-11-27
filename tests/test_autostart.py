@@ -3,9 +3,11 @@ and llama-swap started by the hub when it does not answer (here a fake starter a
 
 import asyncio
 import socket
+import sys
 import threading
 from dataclasses import replace
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
@@ -129,6 +131,32 @@ def test_the_api(hub):  # noqa: F811
     other = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     assert hub.put("/v1/autostart", json={"login": True}, headers={"Authorization": f"Bearer {other}"}).status_code \
         == 403  # fmt: skip
+
+
+def test_a_login_value_of_another_afo_copy_is_not_this_ones(hub, tmp_path):  # noqa: F811
+    """The user's word 2026-11-27, «создаёт в трей ещё одну afo»: the login value ran the development folder's AFO -
+    its own data, lock and tray icon - and the installed AFO, opened later, was a second icon; its switch said «on», as
+    it did for any value. Now «on» only for this copy (its python.exe or pythonw.exe, the path in any case); another
+    copy's folder is told, and whether it is still there; «on» here makes it this one."""
+    store = hub.app.state.run_store
+    copy = tmp_path / "LocalChat"
+    (copy / ".venv" / "Scripts").mkdir(parents=True)
+    store.set(f'"{copy / ".venv" / "Scripts" / "pythonw.exe"}" -m app --tray')
+    found = hub.get("/v1/autostart").json()
+    assert found["login"] is False  # on the old code: True - the switch «on» for the other copy
+    assert found["login_other"] == str(copy) and found["login_other_gone"] is False
+    store.set(f'"{tmp_path / "AFO" / "python" / "pythonw.exe"}" -m app --tray')  # an installed copy, removed since
+    found = hub.get("/v1/autostart").json()
+    assert found["login"] is False and found["login_other"] == str(tmp_path / "AFO") and found["login_other_gone"]
+
+    changed = hub.put("/v1/autostart", json={"login": True}).json()  # «Запускать эту»
+    assert changed["login"] is True and changed["login_other"] == "" and changed["login_other_gone"] is False
+    assert store.get() == changed["login_command"]
+    ours = Path(sys.executable).with_name("pythonw.exe")
+    for value in (f'"{sys.executable}" -m app --tray', f'"{str(ours).upper()}" -m app --tray'):
+        store.set(value)
+        found = hub.get("/v1/autostart").json()
+        assert found["login"] is True and found["login_other"] == "", value
 
 
 def test_the_test_hub_never_starts_llama_swap(hub):  # noqa: F811

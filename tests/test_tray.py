@@ -330,6 +330,49 @@ def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa:
         quick.close()
 
 
+def test_the_login_switch_says_when_another_afo_copy_starts_at_login(qapp):  # noqa: F811
+    """The user's word 2026-11-27, «создаёт в трей ещё одну afo»: Windows' login started another AFO copy (the
+    development folder's), and the switch here said «on». Now it is off, a line under it in both places - «Трей и
+    видеокарта» and «Запуск» - names that copy's folder, and «Запускать эту» makes this one start at login."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+    from tests.test_ui import click
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.started |= {"login_other": r"D:\AI model\LocalChat", "login_other_gone": False}
+        app.attach(client, start_events=False)
+        app.set_tray(True)
+        wait_until(lambda: not app.bg.busy and app.autostart.get("login_other"))
+        for ui, name, switch in (("settings-tray", "settingsTray", "trayLogin"),
+                                 ("settings-startup", "settingsStartup", "autostartLogin")):  # fmt: skip
+            sheet = quick.window.findChild(QObject, name)
+            app.openUi(ui)
+            wait_until(lambda s=sheet: s.property("opened"))
+            assert not shown(quick, switch).property("checked")
+            line = shown(quick, "loginElsewhere")
+            assert line is not None, name  # on the old code there is no such line
+            assert line.property("text") == ("При входе в Windows запускается другая копия AFO — из папки "
+                                              "D:\\AI model\\LocalChat. Если открыть и эту, в трее будет два значка "
+                                              "AFO.")  # fmt: skip
+            QMetaObject.invokeMethod(sheet, "close")
+            wait_until(lambda s=sheet: not s.property("opened"))
+
+        app._set_autostart({**app.autostart, "login_other_gone": True})
+        app.openUi("settings-tray")
+        wait_until(lambda: quick.window.findChild(QObject, "settingsTray").property("opened"))
+        assert shown(quick, "loginElsewhere").property("text") == (
+            "При входе в Windows записан запуск другой копии AFO — из папки D:\\AI model\\LocalChat, "
+            "но её там уже нет.")  # fmt: skip
+        click(quick.window, shown(quick, "loginHere"))
+        wait_until(lambda: client.started["login"] is True)  # «Запускать эту»: this copy at login
+    finally:
+        quick.close()
+
+
 # the first AFO's ear in its own Python (43.10): busy before its loop runs, then it hears, lives on, and is closed
 # right after a word - as a restart does
 FIRST = """\

@@ -24,6 +24,7 @@ Sheet {
             checked: !!App.autostart.login
             onToggled: App.setAutostart("login", checked)
         }
+        LoginElsewhere { width: parent.width }
         OnOff {
             objectName: "autostartLlamaSwap"
             text: qsTr("Хаб сам запускает llama-swap, если тот не отвечает")
