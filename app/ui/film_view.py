@@ -25,7 +25,7 @@ from common.picture_sizes import clip_of, scene_modes
 
 from ..hub_client import HubError
 from .enhance_view import improvement
-from .install_view import gb
+from .install_view import gb, part_loading
 from .visual_view import STATUS, improving, seconds_text, still_of
 
 if TYPE_CHECKING:
@@ -368,14 +368,15 @@ class FilmView(QObject):
         """The parts of the engine of sound: what each is for, whether it is here, how far its download is."""
         parts = []
         for p in self._sounds.get("parts") or []:
-            size, percent = gb(p["size"]), round(100 * p["got"] / p["total"]) if p.get("total") else 0
+            size = gb(p["size"])
             if p["state"] == "ready":
                 note = tr("установлено · {size}", size=size)
             elif p["state"] == "loading":
-                note = tr("скачивается: {percent}%", percent=percent) if p["got"] else tr("скачивается…")
+                note = part_loading(p)  # its speed and time left too (2026-11-27)
             else:
                 note = p.get("error") or tr("не установлено · {size}", size=size)
             parts.append({"id": p["id"], "name": p["name"], "about": p["about"], "state": p["state"], "note": note,
+                          "percent": round(100 * p["got"] / p["total"]) if p.get("total") else 0,
                           "failed": p["state"] == "missing" and bool(p.get("error")),
                           "getText": tr("Скачать {size}", size=size)})  # fmt: skip
         return parts

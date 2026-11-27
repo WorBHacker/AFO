@@ -186,6 +186,27 @@ def license_kind(name: str) -> str:
     return "terms" if OWN_TERMS.search(name) else ""
 
 
+SPEED_SPAN_S = 3.0  # a part's download (enhance, sound): its speed over its last few seconds
+
+
+def measure(load: dict[str, Any], now: float | None = None) -> float:
+    """A part's download speed, bytes a second over its last SPEED_SPAN_S, from its `got` as it goes - kept in
+    `load["speed"]` for the window's «МБ/с» and time left («Стабилизация» 2026-11-27: «Улучшить…» and «Звук фильма»
+    said a percent alone). `got` going back - its next stage, or begun again - begins it anew."""
+    now = time.monotonic() if now is None else now
+    marks = load.setdefault("marks", [])
+    if marks and load["got"] < marks[-1][1]:
+        marks.clear()
+        load["speed"] = 0.0
+    marks.append((now, load["got"]))
+    while len(marks) > 2 and now - marks[1][0] >= SPEED_SPAN_S:
+        del marks[0]
+    first, got = marks[0]
+    if now - first >= 1.0:
+        load["speed"] = max(load["got"] - got, 0) / (now - first)
+    return load.get("speed", 0.0)
+
+
 def not_for_work(licence: str, commercial: bool | None = None) -> bool:
     """(62) Whether a licence forbids commercial use: research or non-commercial (`license_kind` «closed»), or a part
     that says so itself (`commercial` False - MuseTalk: its code MIT, its weights not for work)."""

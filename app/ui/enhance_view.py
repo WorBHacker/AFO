@@ -359,15 +359,15 @@ class EnhanceView(QObject):
 
     def _parts_now(self) -> list[dict[str, Any]]:
         """The parts: what each is for, whether it is here, how far its download is, whether the choice needs it."""
-        from .install_view import gb  # here: it imports the Studio's view, which imports this one
+        from .install_view import gb, part_loading  # here: it imports the Studio's view, which imports this one
 
         wanted, parts = self._wanted(), []
         for p in self._state.get("parts") or []:
-            size, percent = gb(p["size"]), round(100 * p["got"] / p["total"]) if p.get("total") else 0
+            size = gb(p["size"])
             if p["state"] == "ready":  # (56.6) what it takes: an engine on PyTorch - more than it brings
                 note = tr("установлено · {size}", size=gb(p.get("disk") or p["size"]))
             elif p["state"] == "loading":
-                note = tr("скачивается: {percent}%", percent=percent) if p["got"] else tr("скачивается…")
+                note = part_loading(p)  # its speed and time left too (2026-11-27)
             elif p["state"] == "unavailable":
                 note = p.get("why") or ""
             elif p.get("error"):
@@ -377,6 +377,7 @@ class EnhanceView(QObject):
             else:
                 note = tr("не установлено · {size}", size=size)
             parts.append({"id": p["id"], "name": p["name"], "about": p["about"], "state": p["state"], "note": note,
+                          "percent": round(100 * p["got"] / p["total"]) if p.get("total") else 0,
                           "failed": p["state"] in ("missing", "unavailable") and bool(p.get("error") or p.get("why")),
                           "needed": p["id"] in wanted, "getText": tr("Скачать {size}", size=size)})  # fmt: skip
         return parts

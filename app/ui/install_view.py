@@ -400,6 +400,18 @@ def progress_text(job: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def part_loading(part: dict[str, Any]) -> str:
+    """A part's download («Улучшить…», «Звук фильма») said as an install's: «скачивается: 45% · 1,2 ГБ из 2,6 ГБ ·
+    21,7 МБ/с · ещё ≈ 1 мин» («Стабилизация» 2026-11-27: a percent alone); before its first bytes - «скачивается…»."""
+    if not part.get("got"):
+        return tr("скачивается…")
+    total = part.get("total") or 0
+    line = progress_text({"status": "downloading", "done_bytes": part["got"], "total_bytes": total,
+                          "speed": part.get("speed") or 0})  # fmt: skip
+    percent = round(100 * part["got"] / total) if total else 0
+    return " · ".join(s for s in (tr("скачивается: {percent}%", percent=percent), line) if s)
+
+
 def percent_of(job: dict[str, Any]) -> float:
     total = job.get("total_bytes") or 0
     return float(job.get("percent") or (round(100 * (job.get("done_bytes") or 0) / total, 1) if total else 0.0))
@@ -564,6 +576,7 @@ class InstallView(QObject):
     changed = Signal()
     pendingChanged = Signal()  # an action asked of the hub (0.1.16 step 9а): its button and its word, not the sheet
     shownAsked = Signal()  # the Studio led to a card (the fix after 0.1.15): the sheet scrolls to it once
+    partsChanged = Signal()  # a part of «Улучшить…» or «Звук фильма» downloads (2026-11-27): «Установки» lists it
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -642,6 +655,14 @@ class InstallView(QObject):
     @Property(str, notify=changed)
     def purpose(self) -> str:
         return self._purpose
+
+    @Property(list, notify=partsChanged)
+    def partLoads(self) -> list:
+        """The parts of «Улучшить…» and «Звук фильма» downloading now, beside the installs: seen after their sheet
+        is closed («Стабилизация» 2026-11-27, «скачивание не видно в настройках»), with their speed and time left."""
+        views = ((self.app.enhance_view, tr("Улучшить ролик")), (self.app.film_view, tr("Звук фильма")))
+        return [{"id": p["id"], "name": p["name"], "where": where, "note": p["note"], "percent": p["percent"]}
+                for view, where in views for p in view._parts if p["state"] == "loading"]  # fmt: skip
 
     @Property(list, notify=changed)
     def catalog(self) -> list:

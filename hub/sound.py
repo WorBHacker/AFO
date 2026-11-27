@@ -86,6 +86,7 @@ class Sound:
         return {"id": part, "name": tr(spec["name"]), "about": tr(spec["about"]), "size": spec["size"],
                 "licence": spec["licence"], "state": "loading" if going else "ready" if ready else "missing",
                 "got": load.get("got", 0) if going else 0, "total": load.get("total", spec["size"]),
+                "speed": round(load.get("speed", 0)) if going else 0,
                 "error": "" if going else load.get("error", "")}  # fmt: skip
 
     async def state(self) -> dict[str, Any]:
@@ -136,11 +137,12 @@ class Sound:
         load["task"] = asyncio.create_task(self._install(part, load))
         return await self._changed()
 
-    async def _told(self, work: Awaitable[Any]) -> Any:
-        """A download in a thread, told to the window as it goes."""
+    async def _told(self, work: Awaitable[Any], load: dict[str, Any]) -> Any:
+        """A download in a thread, told to the window as it goes - with its speed."""
         task = asyncio.ensure_future(work)
         while not task.done():
             await asyncio.wait({task}, timeout=TICK_S)
+            hf.measure(load)
             await self._changed()
         return task.result()
 
@@ -155,7 +157,7 @@ class Sound:
             def report(got: int, total: int) -> None:
                 load["got"], load["total"] = got, total
 
-            await self._told(asyncio.to_thread(audio_cpp.install, found, self.tools, load["cancel"], report))
+            await self._told(asyncio.to_thread(audio_cpp.install, found, self.tools, load["cancel"], report), load)
 
     async def _install(self, part: str, load: dict[str, Any]) -> None:
         try:
@@ -164,7 +166,7 @@ class Sound:
             if not await asyncio.to_thread(audio_cpp.has, self.models, part):
                 await self._told(asyncio.to_thread(
                     audio_cpp.fetch_model, self.models, part, load["cancel"],
-                    lambda got: load.__setitem__("got", got)))  # fmt: skip
+                    lambda got: load.__setitem__("got", got)), load)  # fmt: skip
         except hf.Cancelled:
             pass  # «Стоп»: what came stays on the disk for the next time
         except (EngineError, hf.HubError, httpx.HTTPError, OSError) as exc:

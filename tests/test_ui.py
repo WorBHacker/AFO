@@ -11689,7 +11689,12 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
         assert named("soundNote_voice").property("text") == "скачивается…"
         assert named("soundStop_voice").property("visible") and not named("soundGet_voice").property("visible")
         hub_sound(voice={"got": 1408527600})
-        assert named("soundNote_voice").property("text") == "скачивается: 50%"
+        assert named("soundNote_voice").property("text") == "скачивается: 50% · 1,4 ГБ из 2,8 ГБ"
+        hub_sound(voice={"got": 1408527600, "speed": 20_000_000})  # its speed and time left (2026-11-27)
+        note = named("soundNote_voice").property("text")
+        assert note == "скачивается: 50% · 1,4 ГБ из 2,8 ГБ · 20,0 МБ/с · ещё ≈ 1 мин"
+        loads = [(p["name"], p["where"], p["percent"]) for p in app.install_view.partLoads]
+        assert loads == [(films.soundParts[0]["name"], "Звук фильма", 50)]  # and in «Установки», its sheet closed
         click(window, named("soundStop_voice"))
         wait_until(lambda: not app.bg.busy and client.sound_calls[-1] == ("stop", "voice"))
         hub_sound(voice={"state": "missing", "got": 0, "error": "файл повреждён — скачайте ещё раз"})
@@ -12028,10 +12033,11 @@ def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
     parts they take (one fetched by a click - how far, then here; one that does not work here says why), «Улучшить»
     only once all of it is here. The job goes into the Studio's queue - «улучшаю: N%», ✕; done, it is a video of
     its own: its poster in the lists, its MP4 plays, saved as MP4 only, what was done to it said. A film's improved
-    video is listed under the film - how far, ✕, «Открыть в «Студии»». Real QML, mouse clicks, no screen."""
+    video is listed under the film - how far, ✕, «Открыть в «Студии»». Real QML, mouse clicks, no screen. A part's
+    download says its speed and time left, in «Установки» too («Стабилизация» 2026-11-27)."""
     from pathlib import Path
 
-    from PySide6.QtCore import QObject
+    from PySide6.QtCore import QMetaObject, QObject
 
     from app.ui.main import QuickApp
     from hub import ffmpeg
@@ -12116,9 +12122,20 @@ def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
         window.grabWindow()
         assert named("improvePartNote_sharp").property("text") == "скачивается…"
         assert named("improveStop_sharp").property("visible") and not go.property("enabled")
-        hub_parts(sharp={"got": 22737240})
-        assert named("improvePartNote_sharp").property("text") == "скачивается: 50%"
+        hub_parts(sharp={"got": 22737240, "speed": 5_000_000})  # its speed and time left (2026-11-27)
+        note = named("improvePartNote_sharp").property("text")
+        assert note == "скачивается: 50% · 23 МБ из 45 МБ · 5,0 МБ/с · ещё ≈ 5 с"
+        assert [p["where"] for p in app.install_view.partLoads] == ["Улучшить ролик"]
+        installs = window.findChild(QObject, "installSheet")  # «Установки»: the part's download in sight there too
+        app.install_view.setTab("jobs")
+        app.openUi("install-models")
+        wait_until(lambda: installs.property("opened"))
+        window.grabWindow()
+        assert named("partLoadNote").property("text") == named("improvePartNote_sharp").property("text")
+        QMetaObject.invokeMethod(installs, "close")
+        wait_until(lambda: not installs.property("visible"))
         hub_parts(sharp={"state": "ready"})
+        assert app.install_view.partLoads == []
         assert named("improvePartNote_sharp").property("text") == "установлено · 45 МБ"
         assert go.property("enabled") and not need.property("visible")
 

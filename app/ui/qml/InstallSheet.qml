@@ -804,9 +804,61 @@ Sheet {
         spacing: 8
         Note { objectName: "jobsPending"; visible: text !== ""; text: Installer.pendingText; color: Theme.p.accent }
         Note {
-            visible: Installer.jobs.length === 0
+            visible: Installer.jobs.length === 0 && Installer.partLoads.length === 0
             text: qsTr("Установок пока нет. Выберите модель в «Подборке».")
             color: Theme.p.faint
+        }
+        // the parts of «Улучшить…» and «Звук фильма» downloading: in sight here too, their sheet closed (2026-11-27)
+        Repeater {
+            model: Installer.partLoads
+            delegate: Rectangle {
+                id: load
+                objectName: "partLoad"
+                required property var modelData
+                width: parent ? parent.width : 600
+                height: loadColumn.height + 20
+                radius: 8
+                color: Theme.p.card
+                border.color: Theme.p.hairline
+                Column {
+                    id: loadColumn
+                    x: 14
+                    y: 10
+                    width: parent.width - 28
+                    spacing: 6
+                    Row {
+                        spacing: 8
+                        Text {
+                            width: Math.max(0, Math.min(implicitWidth, parent.parent.width * 0.6))
+                            elide: Text.ElideRight
+                            text: load.modelData.name
+                            color: Theme.p.text
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Badge {
+                            text: load.modelData.where
+                            tint: Theme.p.accent
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                    Rectangle {
+                        width: parent.width
+                        height: 6
+                        radius: 3
+                        color: Theme.p.hairline
+                        Rectangle {
+                            width: parent.width * Math.min(load.modelData.percent, 100) / 100
+                            height: parent.height
+                            radius: 3
+                            color: Theme.p.accent
+                        }
+                    }
+                    Note { objectName: "partLoadNote"; text: load.modelData.note; color: Theme.p.faint }
+                }
+            }
         }
         Repeater {
             model: Installer.jobs

@@ -640,6 +640,7 @@ class Enhance:
         return {"id": part, "name": tr(spec["name"]), "about": tr(spec["about"]), "size": whole,
                 "disk": disk(part, linked), "licence": spec["licence"], "state": state, "why": why,
                 "got": load.get("got", 0) if going else 0, "total": load.get("total", whole),
+                "speed": round(load.get("speed", 0)) if going else 0,
                 "error": "" if going else load.get("error", "")}  # fmt: skip
 
     async def state(self) -> dict[str, Any]:
@@ -692,11 +693,12 @@ class Enhance:
         load["task"] = asyncio.create_task(self._install(part, load, runtime))
         return await self._changed()
 
-    async def _told(self, work: Awaitable[Any]) -> Any:
-        """A download in a thread, told to the window as it goes."""
+    async def _told(self, work: Awaitable[Any], load: dict[str, Any]) -> Any:
+        """A download in a thread, told to the window as it goes - with its speed."""
         task = asyncio.ensure_future(work)
         while not task.done():
             await asyncio.wait({task}, timeout=TICK_S)
+            hf.measure(load)
             await self._changed()
         return task.result()
 
@@ -706,13 +708,14 @@ class Enhance:
 
         try:
             if on_torch(part):  # (56) an engine on PyTorch: its pins are in AFO's code, GitHub is not asked
-                await self._told(asyncio.to_thread(torch_engines.install, part, self.models, load["cancel"], report))
+                await self._told(asyncio.to_thread(torch_engines.install, part, self.models, load["cancel"], report),
+                                 load)  # fmt: skip
                 return
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
                 found = await assets(http, part, runtime is not None) if not await asyncio.to_thread(
                     find, self.tools, part) else []  # fmt: skip
             await self._told(asyncio.to_thread(install, part, found, self.tools, self.models, load["cancel"], report,
-                                               runtime))  # fmt: skip
+                                               runtime), load)  # fmt: skip
         except hf.Cancelled:
             pass  # «Стоп»: what came stays on the disk for the next time
         except (EngineError, hf.HubError, httpx.HTTPError, OSError) as exc:

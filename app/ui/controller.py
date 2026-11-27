@@ -291,6 +291,8 @@ class Controller(QObject):
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
         self.film_view = FilmView(self)  # «Режиссёр» in the Studio: a film of scenes (50.9)
         self.enhance_view = EnhanceView(self)  # «Улучшить ролик»: a video of the Studio's or a film's (54.6)
+        for parts in (self.enhance_view.partsChanged, self.film_view.partsChanged):  # their downloads in «Установки»
+            parts.connect(self.install_view.partsChanged)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.setup_view.modelsRequested.connect(lambda: self.uiRequested.emit("setup-first-model"))  # 39.3
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed

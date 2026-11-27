@@ -58,6 +58,7 @@ class FakeSources(BaseHTTPRequestHandler):
     port = 0
     corrupt: ClassVar[set] = set()  # the archives that come with a wrong byte
     asked: ClassVar[list] = []
+    slow = 0.0  # seconds an archive takes to come, in pieces; 0 - at once
 
     def log_message(self, *args):
         pass
@@ -68,7 +69,14 @@ class FakeSources(BaseHTTPRequestHandler):
         self.send_header("content-type", kind)
         self.send_header("content-length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        if not self.slow or kind == "application/json":
+            self.wfile.write(data)
+            return
+        step = max(1, len(data) // 20)
+        for at in range(0, len(data), step):
+            self.wfile.write(data[at : at + step])
+            self.wfile.flush()
+            time.sleep(self.slow / 20)
 
     def do_GET(self):
         type(self).asked.append(self.path)
@@ -94,7 +102,7 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     """The hub with the stand-ins: GitHub, Hugging Face, the programs; the pins - the stand-ins' files'; a card of 16
     GB; what the programs were asked - `hub.asked()`."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeSources)
-    FakeSources.port, FakeSources.corrupt, FakeSources.asked = server.server_port, set(), []
+    FakeSources.port, FakeSources.corrupt, FakeSources.asked, FakeSources.slow = server.server_port, set(), [], 0.0
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setenv(hf.BASE_ENV, f"http://127.0.0.1:{server.server_port}")
@@ -205,6 +213,32 @@ def test_the_programs_that_improve_a_video_are_fetched_as_parts_and_keep_only_wh
     assert small["state"] == "unavailable" and "NVIDIA" in small["why"]
     refused = hub.post("/v1/enhance/parts/detail")
     assert refused.status_code == 422 and "NVIDIA" in refused.json()["detail"]
+
+
+def test_a_parts_download_tells_its_speed(stand):
+    """«Стабилизация» 2026-11-27, «у "Улучшить" нет скорости скачивания»: a part's download told its percent alone;
+    now its speed too - bytes a second over its last seconds (`hf.measure`) -, the window's «МБ/с» and time left. Its
+    next stage, or one begun again (`got` going back), begins it anew; a part no longer coming says none."""
+    hub = stand  # noqa: F811
+    FakeSources.slow = 2.0  # the archive comes over two seconds
+    assert install(hub, "smooth")["state"] == "ready"
+    told = [part(p, "smooth") for kind, p in hub.seen if kind == "enhance.changed"]
+    going = [p for p in told if p["state"] == "loading" and p["got"]]
+    assert going and max(p["speed"] for p in going) > 0, going
+    assert told[-1]["speed"] == 0
+
+    load = {"got": 0}
+    assert hf.measure(load, 100.0) == 0.0
+    load["got"] = 4_000_000
+    assert hf.measure(load, 100.5) == 0.0  # under a second: not yet
+    load["got"] = 10_000_000
+    assert hf.measure(load, 101.0) == 10_000_000.0
+    for second in range(2, 8):  # over the last few seconds only: an older stretch is let go
+        load["got"] += 2_000_000 if second < 5 else 1_000_000
+        hf.measure(load, 100.0 + second)
+    assert 1_000_000 <= load["speed"] < 1_500_000
+    load["got"] = 1_000  # the next stage
+    assert hf.measure(load, 108.0) == 0.0
 
 
 def test_a_part_whose_licence_forbids_commercial_use_is_fetched_only_with_the_persons_consent(stand, monkeypatch):
