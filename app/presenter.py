@@ -107,7 +107,7 @@ def answer_meta(usage: dict[str, Any] | None, *, stats: dict | None = None, cost
         parts.append(tr("подписка, по оценке ≈{cost}", cost=money(estimate)) if estimate else tr("подписка"))
     if usage.get("cancelled"):
         parts.append(tr("остановлено"))
-    if usage.get("stop_reason") == "max_tokens":
+    if usage.get("stop_reason") in ("max_tokens", "length"):  # llama.cpp's and OpenAI's word: a limit or the window
         parts.append(tr("обрезано по лимиту"))
     return " · ".join(parts)
 

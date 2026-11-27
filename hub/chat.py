@@ -168,6 +168,13 @@ SNAPSHOTS_SHOWN = "[AFO hub] The pictures page_snapshot took just now, in the or
 # for a model that takes no pictures («Стабилизация», 61.7): what stands in their place
 SNAPSHOTS_UNSEEN = "[AFO hub] page_snapshot took pictures just now; not shown: this model does not take pictures."
 PICTURES_UNSEEN = "(the pictures sent with this message are not shown: this model does not take pictures)"
+# an answer cut off by the end of its room - the model's window or its answer limit - in a tool call: the call did not
+# run («Стабилизация» 2026-11-27, «режим цель не выполняет коды»); said to the model this often in a run, then it ends
+CUT_CALL = ("[AFO hub] Your last answer was cut off - it ran out of room (the model's context or its answer limit) "
+            "before its tool call was complete, so the call did not run. Do it again in smaller pieces: one file per "
+            "call, a long file in parts (write_file with its first part, then edit_file to add the rest), and think "
+            "briefly before the call.")  # fmt: skip
+MAX_CUTS = 2
 # a «yes» typed in answer to the hub's own question (33.2), not a button
 YES = re.compile(r"\s*(да|yes|ok|ок|разрешаю|разрешить)\b", re.IGNORECASE)  # i18n: keep
 
@@ -619,6 +626,7 @@ class ChatService:
         fallback: dict | None = None  # the spare took over (once per run): from which model, and why
         tools = None
         scale, squeezed = 1.0, 0  # how far the length guess falls short for this model; requests sent shorter again
+        cuts = 0  # its answers cut off in a tool call, said to it (CUT_CALL)
         last_words = 2 if limits.autonomous and self.autonomy is not None else 0  # turns to mark a step and report
         message_id, completion = None, None  # its last step stored, its last model call: none before the first
         for step in range(limits.max_steps + 2 + last_words):
@@ -632,11 +640,6 @@ class ChatService:
                 for notice in self.autonomy.take_notices(conversation_id):
                     await self._hub_note(conversation_id, notice)
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
-            if self.compact is not None:  # a goal's stages done: one line each (11.5), the conversation stays whole
-                history = await self.compact(conversation_id, history)
-            prompt = _pictures_for(model, _to_prompt(history, cloud=cloud, blobs=self.blobs))
-            if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
-                prompt = [{"role": "system", "content": system}, *prompt]
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
             # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
             # even after the hub's tools changed
@@ -651,6 +654,14 @@ class ChatService:
                 tools = await self._db.acall(
                     lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
                 )
+            if self.compact is not None:  # a goal: its stages done one line each (11.5), its old turns too once the
+                # window fills («Стабилизация» 2026-11-27) - the conversation itself stays whole
+                window = (model.get("capabilities") or {}).get("context")
+                history = await self.compact(conversation_id, history, _share(model, system, tools, window, scale,
+                                                                              cloud))  # fmt: skip
+            prompt = _pictures_for(model, _to_prompt(history, cloud=cloud, blobs=self.blobs))
+            if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
+                prompt = [{"role": "system", "content": system}, *prompt]
             # a long run outgrows the model's window: the oldest tool results give way in this request (hub/fit.py)
             prompt, shortened = fit.fit(prompt, window=(model.get("capabilities") or {}).get("context"), tools=tools,
                                         scale=scale)  # fmt: skip
@@ -703,6 +714,14 @@ class ChatService:
                 outcome.status, outcome.detail = "error", completion.refusal
                 return
             stopped_short = completion.stop_reason in ("max_tokens", "length")  # a cut-off call must not run
+            if stopped_short and completion.tool_calls and not completion.cancelled and cuts < MAX_CUTS:
+                cuts += 1  # its call was cut: said to it, and it goes on - not a turn that did nothing («Стабилизация»)
+                log.info("conversation %s: %s's tool call was cut off (%s): asked again in smaller pieces",
+                         conversation_id, model["id"], completion.stop_reason)  # fmt: skip
+                completion.tool_calls, completion.raw = [], None  # the provider's blocks hold the call that never ran
+                message_id = await self._save_step(conversation_id, model, completion, client_id, run)
+                await self._hub_note(conversation_id, CUT_CALL)
+                continue
             if not completion.tool_calls or completion.cancelled or stopped_short:
                 completion.tool_calls = []
                 nudge = None
@@ -1938,6 +1957,22 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: P
             entry["provider_raw"] = message.provider_raw
         prompt.append(entry)
     return _answer_open_calls(prompt)
+
+
+def _share(model: dict, system: str, tools: list[dict] | None, window: int | None, scale: float, cloud: bool
+           ) -> Callable[[list[store.MessageRow]], float] | None:  # fmt: skip
+    """How much of a request's room (hub/fit.py) a history would take - 1.0 is all of it - as fit guesses with this
+    model's `scale`; None when the model's window is not known. Its pictures are not read for it."""
+    if not window:
+        return None
+    room = fit.room(window) - fit.tokens(tools) * scale
+    head = fit.tokens({"role": "system", "content": system}) if system else 0
+
+    def share(rows: list[store.MessageRow]) -> float:
+        prompt = _pictures_for(model, _to_prompt(rows, cloud=cloud))
+        return (head + fit.estimate(prompt)) * scale / room if room > 0 else 1.0
+
+    return share
 
 
 def _not_json(sent: Any) -> str:

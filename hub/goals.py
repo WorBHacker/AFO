@@ -49,18 +49,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import re
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from common.i18n import N_, tr
 from common.logging_setup import log_task_exception
 
-from . import approvals, checkpoints, commands, guard, judge, sandbox, store
+from . import approvals, checkpoints, commands, fit, guard, judge, sandbox, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -722,6 +724,161 @@ def _fold(history: list[MessageRow], lo: int, hi: int, line: str) -> list[Messag
         [row] if i not in drop else [])]  # fmt: skip
 
 
+FOLD_AT = 0.6  # a goal's request past this share of the model's room folds its old turns («Стабилизация» 2026-11-27)
+KEEP_TURNS = 2  # the last turns stay whole
+KEEP_RESULTS = 3  # a turn too long by itself: its last tool results stay whole
+WORDS_KEPT = 400  # of what a folded turn said last
+FOLDED = ("[EARLIER TURNS OF THIS GOAL, FOLDED BY THE HUB to keep room in your context - one line each: its tool calls "
+          "and what it said last. The files are on disk as those turns left them: read one again when you need "
+          "it.]")  # fmt: skip
+USER_ADDED = re.compile(r"THE USER ADDED[^\n]*:\n(.*?)(?:\nTurn \d+ of |\n</goal_loop>|$)", re.DOTALL)
+CHECKED = re.compile(r"CHECK OF YOUR LAST TURN: ([^\n]*)\n(?:- )?([^\n]*)")
+EXIT = re.compile(r"exit code (-?\d+)")
+TARGETS = ("path", "command", "url", "query", "pattern")  # what a call names, by its arguments
+
+
+def _turn_note(row: MessageRow) -> bool:
+    """The hub's note that opens a goal's turn (start, continuation, investigation, …)."""
+    return _hub_note(row) and any("<goal_loop" in (b.get("text") or "") for b in row.content)
+
+
+def fold_point(history: list[MessageRow], start: int, upto: int) -> int:
+    """Where the request should fold to now, past `upto` when it can (`folded`): the start of the turn before the
+    last KEEP_TURNS-1 - every turn before it goes as a line; when that is no further, a point in the last turn before
+    its last KEEP_RESULTS tool results. Never past the user's own words."""
+    turns = [row.seq for row in history if row.seq >= start and _turn_note(row)]
+    if not turns:
+        return upto
+    cap = next((row.seq for row in history if row.seq > turns[0] and row.role == "user" and not _hub_note(row)),
+               None)  # fmt: skip
+    candidates = []
+    if len(turns) > KEEP_TURNS:
+        candidates.append(turns[-KEEP_TURNS])
+    results = [row.seq for row in history if row.seq > turns[-1] and row.role == "tool"]
+    if len(results) > KEEP_RESULTS:
+        candidates.append(results[-KEEP_RESULTS])
+    for point in candidates:
+        if point > upto and (cap is None or point <= cap):
+            return point
+    return upto
+
+
+def turn_numbers(history: list[MessageRow], start: int) -> dict[int, int]:
+    """Each goal turn's note -> the turn's number (1 - the first): of the stored conversation, before stages fold."""
+    return {row.seq: n for n, row in enumerate((r for r in history if r.seq >= start and _turn_note(r)), 1)}
+
+
+def folded(history: list[MessageRow], start: int, upto: int, numbers: dict[int, int] | None = None
+           ) -> list[MessageRow]:  # fmt: skip
+    """The request's history with the goal's turns before `upto` folded: the contract (the goal's first note) stays,
+    then the context layers no later message replaced (one system message), then the turns as one message of lines
+    (`FOLDED`, the stages done in it as they were); the turn `upto` falls in keeps its messages, its tool results
+    before `upto` as a one-line note («Стабилизация» 2026-11-27: the user's word - compact before the chat is full,
+    and what is done two steps back goes from the context). `numbers`: the turns' numbers (`turn_numbers`) - where
+    stages are folded, fewer notes are left. The stored conversation stays whole (D14)."""
+    if not upto:
+        return history
+    turns = [row.seq for row in history if row.seq >= start and _turn_note(row)]
+    if not turns:
+        return history
+    contract = turns[0]
+    whole = max(s for s in turns if s <= upto) if upto >= contract else contract  # the turn upto falls in
+    latest: dict[str, int] = {}  # each context layer's last message
+    for row in history:
+        if row.role == "system":
+            for block in row.content:
+                if block.get("type") == "context":
+                    latest[block.get("key", "")] = row.seq
+    before, inside, after = [], [], []
+    for row in history:
+        (before if row.seq <= contract else inside if row.seq < whole else after).append(row)
+    layers = [b for row in inside if row.role == "system" for b in row.content
+              if b.get("type") != "context" or latest.get(b.get("key", "")) == row.seq]  # fmt: skip
+    lines = _turn_lines([row for row in inside if row.role != "system"], numbers or {})
+    out = list(before)
+    if layers:
+        first = next(row for row in inside if row.role == "system")
+        out.append(dataclasses.replace(first, content=layers))
+    if lines:
+        first = next(row for row in inside if row.role != "system")
+        out.append(MessageRow(0, first.seq, "assistant", None, [{"type": "text", "text": "\n".join([FOLDED, *lines])}],
+                              first.created_at))  # fmt: skip
+    for row in after:
+        if row.role == "tool" and row.seq < upto:
+            row = dataclasses.replace(row, content=[_noted(b) for b in row.content])
+        out.append(row)
+    return out
+
+
+def _noted(block: dict[str, Any]) -> dict[str, Any]:
+    text = block.get("output")
+    if block.get("type") != "tool_result" or not isinstance(text, str) or len(text) <= fit.TOOL_MIN:
+        return block
+    return {**block, "output": fit.STUB.format(name=block.get("name") or "инструмент", chars=len(text))}  # i18n: keep
+
+
+def _turn_lines(rows: list[MessageRow], numbers: dict[int, int]) -> list[str]:
+    """One line per goal turn in `rows` (the first is turn 1, its note - the contract - already kept; `numbers`: a
+    note's turn): its calls - each with what it named and how it ended - and its last words; what the user added
+    and the check it began with; a stage's line (`compacted`) as it is."""
+    groups: list[tuple[int, MessageRow | None, list[MessageRow]]] = [(1, None, [])]
+    for row in rows:
+        if _turn_note(row):
+            groups.append((numbers.get(row.seq, groups[-1][0] + 1), row, []))
+        else:
+            groups[-1][2].append(row)
+    out = []
+    for n, note, body in groups:
+        if note is None and not body:
+            continue
+        results = {b.get("id"): b for row in body if row.role == "tool" for b in row.content
+                   if b.get("type") == "tool_result"}  # fmt: skip
+        calls: dict[str, int] = {}
+        words, stages = "", []
+        for row in body:
+            if row.role != "assistant":
+                continue
+            text = "".join(b.get("text", "") for b in row.content if b.get("type") == "text").strip()
+            if not row.id and text.startswith("[STAGE "):
+                stages.append(text)
+                continue
+            words = text or words
+            for b in row.content:
+                if b.get("type") == "tool_call":
+                    call = _call_line(b, results.get(b.get("id")))
+                    calls[call] = calls.get(call, 0) + 1
+        said = "; ".join(f"{c} ×{k}" if k > 1 else c for c, k in calls.items())
+        line = f"TURN {n}: " + (said or "no tool calls")
+        if words:
+            line += f". It said last: «{words if len(words) <= WORDS_KEPT else words[: WORDS_KEPT - 1] + '…'}»"
+        text = "".join(b.get("text", "") for b in note.content) if note is not None else ""
+        if checked := CHECKED.search(text):
+            line += f"\n  It began after the check: {checked[1]}" + (f" ({checked[2][:200]})" if checked[2] else "")
+        if added := USER_ADDED.search(text):
+            line += f"\n  The user added before it: {added[1].strip()}"
+        out += [*stages, line]
+    return out
+
+
+def _call_line(call: dict[str, Any], result: dict[str, Any] | None) -> str:
+    """A tool call as a folded turn tells it: its name, what it named, how it ended."""
+    args = call.get("input") if isinstance(call.get("input"), dict) else {}
+    target = next((str(args[k]) for k in TARGETS if isinstance(args.get(k), str) and args[k]), "")
+    line = call.get("name") or "tool"
+    if target:
+        line += f" {target if len(target) <= 120 else target[:119] + '…'}"
+    output = (result or {}).get("output")
+    output = output if isinstance(output, str) else ""
+    if result is None:
+        return line + " (no result)"
+    if code := EXIT.search(output[:200]):
+        return line + f" -> exit {code[1]}"
+    if result.get("error"):
+        first = output.strip().splitlines()[0] if output.strip() else "failed"
+        return line + f" -> error: {first[:100]}"
+    return line
+
+
 def limit_words(resets: float) -> str:
     """Why a goal of Claude Code waits (20.3): its subscription's limit, and until when (`resets` - 0: not said)."""
     if not resets:
@@ -778,6 +935,7 @@ class Goals:
         self._began: dict[str, dict[str, str]] = {}  # a goal's turn running: its projects' trees at its start (21.1)
         self._laned: set[str] = set()  # chats whose goal's turn holds the card's queue (61.8) till the turn ends
         self._later: set[asyncio.Task] = set()  # goals' turns waiting in that queue
+        self._folded: dict[str, tuple[str, int]] = {}  # chat -> (its goal, the message its request folds to: compact)
 
     async def start(self) -> list[str]:
         """Goals the last hub left at work go on (D16): each active one gets its next turn."""
@@ -1198,20 +1356,49 @@ class Goals:
                                                 "goal": changed, "proving": False, "by": by})  # fmt: skip
         return changed
 
-    async def compact(self, conversation_id: str, history: list[MessageRow]) -> list[MessageRow]:
-        """The request's history with each stage done as one line (11.5) - for the open goal of the chat."""
+    async def compact(self, conversation_id: str, history: list[MessageRow],
+                      share: Callable[[list[MessageRow]], float] | None = None) -> list[MessageRow]:  # fmt: skip
+        """The request's history for the open goal of the chat: each stage done as one line (11.5); and once the
+        request would take FOLD_AT of the model's room (`share`, hub/chat.py), its turns but the last KEEP_TURNS as
+        one line each - in a turn too long by itself, its tool results but the last KEEP_RESULTS as a note (`folded`).
+        Where it folds to only moves on, and only when the request is past FOLD_AT again: a fold changes the request
+        from there, and the model reads all of it again once (the prompt cache), not at each step."""
 
         def read(conn):
             goal = goal_of(conn, conversation_id)
-            done = [m for m in (goal or {}).get("milestones") or [] if m["status"] == "done" and m["closed_seq"]]
-            if not done:
+            if goal is None:
                 return None
+            done = [m for m in goal.get("milestones") or [] if m["status"] == "done" and m["closed_seq"]]
             start = conn.execute("SELECT min(seq) FROM messages WHERE conversation_id = ? AND created_at >= ?",
                                  (conversation_id, goal["created_at"])).fetchone()[0]  # fmt: skip
-            return done, start, bool(goal["strong_model_id"])
+            return goal["id"], done, start, bool(goal["strong_model_id"])
 
         found = await self._db.acall(read)
-        return compacted(history, *found) if found else history
+        if found is None:
+            return history
+        goal_id, done, start, keep_plan = found
+        numbers = turn_numbers(history, start) if start is not None else {}
+        if done:
+            history = compacted(history, done, start, keep_plan)
+        if share is None or start is None:
+            return history
+        was = self._folded.get(conversation_id)
+        upto = was[1] if was and was[0] == goal_id else 0
+        out = folded(history, start, upto, numbers)
+        moved = upto
+        for _ in range(2):  # the old turns first, then inside the last one
+            if share(out) <= FOLD_AT:
+                break
+            further = fold_point(history, start, moved)
+            if further <= moved:
+                break
+            moved = further
+            out = folded(history, start, moved, numbers)
+        if moved != upto:
+            self._folded[conversation_id] = (goal_id, moved)
+            log.info("goal %s: its request was past %d%% of the model's room: folded to message %d, now %d%%",
+                     goal_id, FOLD_AT * 100, moved, share(out) * 100)  # fmt: skip
+        return out
 
     async def _go_on(self, goal: dict[str, Any], verdict: str | None, found: dict[str, Any], *,
                      mark: tuple[str | None, int] = (None, 0), investigate: str = "", head: str = "",

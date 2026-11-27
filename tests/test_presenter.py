@@ -44,6 +44,7 @@ def test_answer_meta():
     cancelled = {"output_tokens": 7, "estimated": True, "cancelled": True}
     assert presenter.answer_meta(cancelled) == "~7 ток. · остановлено"
     assert presenter.answer_meta({"output_tokens": 5, "stop_reason": "max_tokens"}).endswith("обрезано по лимиту")
+    assert presenter.answer_meta({"output_tokens": 5, "stop_reason": "length"}).endswith("обрезано по лимиту")  # llama
     assert presenter.answer_meta(None) == ""
 
 

@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 
-from hub import goals
+from hub import chat, fit, goals
 from hub.auth import create_client
 from hub.claude_code import ClaudeCodeProvider
 from hub.gateway import ProviderError
@@ -251,6 +251,125 @@ def test_the_strong_models_plan_stays_in_the_first_stages_line():
                                             "SAID (the plan, kept):\nПЛАН: сначала a, потом b.")  # fmt: skip
     plain = goals.compacted(history, done, 1)
     assert plain[1].content[0]["text"] == "[STAGE 1 DONE - turns 1-2] Сделать a: a"
+
+
+class Windowed(Scripted):
+    """Scripted, with a context window of its own - and an answer that runs out of room in a tool call (CUT: its
+    call as llama.cpp ends it, finish_reason «length»)."""
+
+    def __init__(self, name, script, window):
+        super().__init__(name, script)
+        self.models = [Model(f"{name}/m", name, "m", name.title(), "local", {"context": window}, {})]
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        if self.script and self.script[0] == CUT:
+            self.script.pop(0)
+            self.prompts.append(messages)
+            yield StreamEvent("content", "Пишу файл целиком:")
+            cut = [{"id": "cut", "name": "write_file", "input": {"project": "proj"}}]
+            used = {"input_tokens": 5, "output_tokens": 2}
+            yield StreamEvent("end", usage=used, stop_reason="length", tool_calls=cut)
+            return
+        async for event in super().stream_chat(model_ref, messages, effort, cancel, tools):
+            yield event
+
+
+CUT = "cut"  # a step of Windowed's script: the answer is cut off in its call
+
+
+def test_an_answer_cut_off_in_its_tool_call_is_told_so_and_goes_on(hub, repo):  # noqa: F811
+    """«Стабилизация» 2026-11-27 («режим цель не выполняет коды»): an answer that ran out of the model's room in a
+    tool call ended the turn as done - the call dropped without a word, the check «not met», the next turn longer
+    still. Now the model hears the call did not run and does it again in smaller pieces, in the same turn."""
+    worker = use(hub, Windowed("agent", [CUT, WRITE, "Записал done.txt."], 16384))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv)
+    done = settled(hub, conv, "achieved", "blocked")
+    assert done["goal"]["status"] == "achieved" and done["goal"]["turns_used"] == 1  # the same turn, not the next
+    told = [m["content"] for m in worker.prompts[1] if m["role"] == "user"][-1]
+    assert told == chat.CUT_CALL
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    cut = next(m for m in stored if m["role"] == "assistant")
+    assert [(b["type"], b.get("text")) for b in cut["content"]] == [("text", "Пишу файл целиком:")]  # no call kept
+    assert len(tool_outputs(hub, conv)) == 1  # only the call that came whole ran
+
+
+def test_a_goals_old_turns_fold_before_its_window_fills(hub, repo):  # noqa: F811
+    """«Стабилизация» 2026-11-27, the user's word: «сделать compact перед заполнением чата … уже выполненых частей
+    типа 2 шага назад очистить их кеш и контекст». A goal whose request would take FOLD_AT of the model's room goes
+    on with its turns but the last two as one line each, written by the hub: the calls with what they named and how
+    they ended, the last words, the check the turn began with; the contract stays, the conversation keeps it all."""
+    body = "x" * 10500  # about 3500 tokens a turn: two turns and the rest are past 60 % of a 16K window's room
+    script = []
+    for k in range(1, 6):
+        writes = [("write_file", {"project": "proj", "path": f"part{k}.txt", "content": body})]
+        script += [writes + (WRITE if k == 5 else []), f"Записал part{k}.txt."]
+    worker = use(hub, Windowed("agent", script, 16384))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, criteria=[{"command": "(Get-ChildItem part*.txt).Name -join ','; " + DONE}])
+    done = settled(hub, conv, "achieved", "blocked")
+    assert done["goal"]["status"] == "achieved" and done["goal"]["turns_used"] == 5
+    last = next(p for p in worker.prompts if "Turn 5 of 25" in hub_note(p))  # the fifth turn's first request
+    sent = [c["input"]["path"] for m in last for c in m.get("tool_calls") or []]
+    assert sent == ["part4.txt"]  # the turn before stays whole, the three before it are lines
+    lines = [m["content"] for m in last if m["role"] == "assistant" and "FOLDED BY THE HUB" in (m["content"] or "")]
+    assert len(lines) == 1, [m["content"][:80] for m in last if m["role"] == "assistant"]
+    folded = lines[0]
+    assert "TURN 1: write_file part1.txt. It said last: «Записал part1.txt.»" in folded
+    assert "TURN 3: write_file part3.txt" in folded and "TURN 4" not in folded and body not in folded
+    assert "It began after the check: not met. (criterion 1:" in folded  # turns 2 and 3 began after one
+    assert any(m["role"] == "user" and 'type="start"' in str(m["content"]) for m in last)  # the contract stays
+    assert fit.estimate(last) < fit.room(16384) * goals.FOLD_AT
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    paths = [b["input"]["path"] for m in stored for b in m["content"] if b.get("type") == "tool_call"]
+    assert paths == ["part1.txt", "part2.txt", "part3.txt", "part4.txt", "part5.txt", "done.txt"]  # D14
+
+
+def test_folding_keeps_the_layers_no_later_one_replaced_and_notes_old_results_in_a_long_turn():
+    """`folded`: of the context messages in the folded turns only the layers no later message replaced stay, as one
+    system message; what the user added and a command's exit code are in the turn's line; a turn too long by itself
+    keeps its last KEEP_RESULTS results whole, the ones before as a note (`fold_point`)."""
+
+    def note(seq, text):
+        return MessageRow(seq, seq, "user", None, [{"type": "text", "text": f"[AFO hub] {text}", "hub": True}], "")
+
+    def layers(seq, *keys):
+        return MessageRow(seq, seq, "system", None, [{"type": "context", "key": k, "text": f"{k}@{seq}"}
+                                                     for k in keys], "")  # fmt: skip
+
+    def call(seq, cid, name, args, text=""):
+        blocks = [{"type": "text", "text": text}] if text else []
+        return MessageRow(seq, seq, "assistant", "agent/m", [*blocks, {"type": "tool_call", "id": cid, "name": name,
+                                                                        "input": args}], "")  # fmt: skip
+
+    def result(seq, cid, name, output):
+        return MessageRow(seq, seq, "tool", None, [{"type": "tool_result", "id": cid, "name": name, "output": output}],
+                          "")  # fmt: skip
+
+    history = [note(1, '<goal_loop type="start">'), layers(2, "header", "map", "live:p"),
+               call(3, "a", "run_command", {"command": "pytest -q"}), result(4, "a", "run_command", "exit code 1; x"),
+               MessageRow(5, 5, "assistant", "agent/m", [{"type": "text", "text": "Тесты падают."}], ""),
+               note(6, '<goal_loop type="continuation">\nCHECK OF YOUR LAST TURN: not met.\n- criterion 1: `x`\n'
+                       "THE USER ADDED WHILE YOU WORKED - it comes first in this step:\nбез numpy\nTurn 2 of 9 ·"),
+               layers(7, "header", "live:p"), call(8, "b", "edit_file", {"path": "a.py"}),
+               result(9, "b", "edit_file", "ok"), note(10, '<goal_loop type="continuation">'),
+               layers(11, "header", "live:p"), *[r for k in range(5) for r in (
+                   call(12 + 2 * k, f"r{k}", "read_file", {"path": f"f{k}.py"}),
+                   result(13 + 2 * k, f"r{k}", "read_file", "y" * 900))]]  # fmt: skip
+    assert goals.fold_point(history, 1, 0) == 6  # three turns: the two last stay
+    once = goals.folded(history, 1, 6, goals.turn_numbers(history, 1))
+    assert [r.seq for r in once][:3] == [1, 2, 3] and once[1].content == [history[1].content[1]]  # «map» stays alone
+    assert once[2].content[0]["text"].endswith("TURN 1: run_command pytest -q -> exit 1. It said last: «Тесты "
+                                               "падают.»")  # fmt: skip
+    assert [r.seq for r in once][3:] == [r.seq for r in history[5:]]  # the turn before the last stays whole
+    assert goals.fold_point(history, 1, 6) == 17  # the last turn alone: its last three results stay
+    twice = goals.folded(history, 1, 17, goals.turn_numbers(history, 1))
+    line = twice[2].content[0]["text"]
+    assert ("TURN 2: edit_file a.py\n  It began after the check: not met. (criterion 1: `x`)\n  The user added before "
+            "it: без numpy") in line  # fmt: skip
+    outputs = [r.content[0]["output"] for r in twice if r.role == "tool"]
+    assert [o[:9] for o in outputs] == ["[read_fil", "[read_fil", "y" * 9, "y" * 9, "y" * 9]
+    assert history[12].content[0]["output"] == "y" * 900  # the rows themselves stay as they were
 
 
 def goal_refs(repo, goal_id):
