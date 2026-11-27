@@ -214,6 +214,78 @@ def test_the_goal_bar_says_the_turn_at_work_what_it_waits_for_and_keeps_no_stale
         quick.close()
 
 
+def test_the_goal_bar_leaves_the_chat_and_the_approval_card_their_room(qapp):  # noqa: F811
+    """«Стабилизация» 2026-11-27, «в чате Проекты — некорректно отображается окно цели»: in the smallest window, in
+    «Чаты» and in a project's chat, the bar takes 45 % of the window at most and leaves the conversation 160px; what
+    does not fit scrolls under its line with the buttons; why the goal stands is said whole; the approval card ends
+    above the bars; a long list of stages scrolls inside its box."""
+    from datetime import UTC, datetime
+
+    from PySide6.QtQuick import QQuickItem
+
+    from app.ui.main import QuickApp
+    from tests.test_ui_bounds import box
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = GoalClient()
+        plain, now = client.conversations, datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        client.conversations = lambda: {**plain(), "conversations": [
+            {"id": "s1", "title": "Сеанс проекта", "updated_at": now, "home_project": "p1"},
+            *plain()["conversations"]]}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.projects.items)
+        quick.window.resize(900, 560)
+        opened(app)
+        view = app.goal_view
+        why = "проверяющая модель не ответила трижды подряд: " + "сеть недоступна, хаб ждёт её и не начинает ход " * 4
+        stages = [{"n": n, "title": f"Этап {n}: собрать и проверить часть {n}", "status": "pending", "summary": "",
+                   "turn": None} for n in range(1, 21)]  # fmt: skip
+        client.goal_data = {"goal": {**copy.deepcopy(GOAL), "status": "blocked", "detail": why, "milestones": stages},
+                            "checks": [CHECK], "steering": [], "checking": False}  # fmt: skip
+        bar = quick.window.findChild(QQuickItem, "goalBar")
+        banner = quick.window.findChild(QQuickItem, "approvalBanner")
+
+        def fits():
+            view.load()
+            wait_until(lambda: not app.bg.busy and view.shown and view.detail == why)
+            if not view.expanded:
+                view.toggle()
+            for _ in range(10):
+                QApplication.processEvents()
+            quick.window.grabWindow()
+            main = bar.parentItem()
+            shown = [c for c in main.childItems() if c.isVisible()]
+            chat = next(c for c in shown if c.metaObject().className().startswith("ChatView"))
+            assert bar.isVisible() and bar.height() <= main.height() * 0.45 + 1 and chat.height() >= 159
+            assert quick.window.findChild(QQuickItem, "goalScroll").property("interactive")  # the rest scrolls
+            assert quick.window.findChild(QQuickItem, "goalResume").isVisible()  # the buttons stay in sight
+            line = quick.window.findChild(QQuickItem, "goalLine")
+            assert not line.property("truncated") and line.property("lineCount") > 1  # why - whole
+            what, state = (quick.window.findChild(QQuickItem, name) for name in ("goalWhat", "goalState"))
+            assert what.width() >= 0 and box(what).right() <= box(state).left()
+            assert box(banner).top() + banner.property("room") <= box(bar).top()  # the card ends above the bars
+
+        fits()
+        app.projects.openProject("p1")
+        wait_until(lambda: not app.bg.busy and app.projects.currentId == "p1")
+        app.setMode("projects")
+        app.openProjectChat("s1")
+        wait_until(lambda: not app.bg.busy and app.currentId == "s1" and app.showProjectChat)
+        fits()
+
+        editor = quick.window.findChild(QQuickItem, "goalStageEditor")
+        editor.setProperty("visible", True)
+        quick.window.findChild(QQuickItem, "goalStageText").setProperty("text", view.pendingStages)
+        for _ in range(10):
+            QApplication.processEvents()
+        box_ = quick.window.findChild(QQuickItem, "goalStageScroll")
+        assert box_.property("contentHeight") > box_.height() and box_.height() <= 140
+    finally:
+        quick.close()
+
+
 def test_the_goal_in_the_window(qapp):  # noqa: F811
     from app.ui.main import QuickApp
 

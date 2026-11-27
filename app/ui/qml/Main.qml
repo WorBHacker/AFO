@@ -79,6 +79,9 @@ Window {
         x: sidebar.width
         width: parent.width - sidebar.width
         height: parent.height - statusBar.height
+        // the bars over a chat's composer: what the conversation and the approval card leave them
+        readonly property real bars: (sandboxBar.visible ? sandboxBar.height : 0) + (folderBar.visible ? folderBar.height : 0)
+                                     + (goalBar.visible ? goalBar.height : 0) + (tasksBar.visible ? tasksBar.height : 0)
 
         TitleBar {
             id: titleBar
@@ -93,9 +96,7 @@ Window {
             reserve: approvalBanner.visible ? approvalBanner.height + 10 : 0
             y: titleBar.height
             width: parent.width
-            height: parent.height - titleBar.height - composer.height - (sandboxBar.visible ? sandboxBar.height : 0)
-                    - (folderBar.visible ? folderBar.height : 0)
-                    - (goalBar.visible ? goalBar.height : 0) - (tasksBar.visible ? tasksBar.height : 0)
+            height: Math.max(0, parent.height - titleBar.height - composer.height - main.bars)
         }
         TasksBar {
             id: tasksBar
@@ -110,6 +111,10 @@ Window {
             visible: (App.mode === "chats" || App.showProjectChat) && Goal.shown
             anchors.bottom: sandboxBar.visible ? sandboxBar.top : folderBar.visible ? folderBar.top : composer.top
             width: parent.width
+            // the conversation keeps 160px and the bar takes 45% of the window at most: the rest of it scrolls (2026-11-27)
+            room: Math.min(parent.height * 0.45, parent.height - titleBar.height - composer.height - 160
+                           - (sandboxBar.visible ? sandboxBar.height : 0) - (folderBar.visible ? folderBar.height : 0)
+                           - (tasksBar.visible ? tasksBar.height : 0))
         }
         SandboxBar {
             id: sandboxBar
@@ -172,7 +177,8 @@ Window {
             column: Math.min(780, parent.width - 48)
             x: (parent.width - width) / 2
             y: titleBar.height + 10
-            room: parent.height - y - composer.height - 10
+            // down to the bars over the composer: a goal's, the tasks', the sandbox's, the folder's (2026-11-27)
+            room: parent.height - y - composer.height - main.bars - 10
             onFinished: composer.focusInput()
         }
     }
