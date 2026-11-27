@@ -6,6 +6,7 @@ Column {
     id: answer
     property var row: ({})  // read as row?.x: while a delegate is torn down, its row is null for a moment
     property int rowIndex: -1
+    property bool onScreen: true  // its row on the chat's screen (ChatView): its videos play only then
     spacing: 12
     // the chat's row now shows another answer (ChatView.reuseItems): its pieces are kept where they match, so
     // their selection, a code block's sideways scroll and «Скопировано» are cleared
@@ -73,6 +74,7 @@ Column {
         width: answer.width
         tools: answer.row?.tools || []
         rowIndex: answer.rowIndex
+        onScreen: answer.onScreen
     }
 
     // The pieces live in a ListModel that changes only where the answer did: while an answer streams, its new

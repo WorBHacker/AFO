@@ -38,6 +38,8 @@ ListView {
         height: loader.height
         // after a theme switch a row is rendered again once in sight - on screen or within a screen of it (24.3)
         readonly property bool inSight: y + height > list.contentY - list.height && y < list.contentY + 2 * list.height
+        // on the screen itself: a video in the row plays only then (2026-11-27, «лаги при прокрутке»)
+        readonly property bool onScreen: y + height > list.contentY && y < list.contentY + list.height
         onInSightChanged: if (inSight) App.restyleRow(index)
         Component.onCompleted: if (inSight) App.restyleRow(index)
         Connections {
@@ -64,6 +66,8 @@ ListView {
             onLoaded: {
                 item.row = Qt.binding(() => slot.model)
                 item.rowIndex = Qt.binding(() => slot.index)
+                if ("onScreen" in item)
+                    item.onScreen = Qt.binding(() => slot.onScreen)
             }
         }
     }

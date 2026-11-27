@@ -8039,6 +8039,104 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         quick.close()
 
 
+def test_a_chats_video_scrolled_out_of_sight_pauses_and_goes_on_from_there(qapp):
+    """«Стабилизация» 2026-11-27, «лаги при прокрутке»: the chat keeps its rows laid out 20000px around the screen,
+    and a video's card there went on decoding and painting its frames on the window's thread (the window's log had
+    `video_surface.py paint` among its stalls). Scrolled away - its WebP, then its MP4 - it pauses; back in sight it
+    goes on from where it was, not from its start; paused by the person, it stays paused."""
+    import threading
+
+    from PySide6.QtCore import QMetaObject
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from app.ui.main import QuickApp
+
+    def walk(item):
+        yield item
+        for child in item.childItems():
+            yield from walk(child)
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        blob = "cd" * 32
+        copy = app.paths.blobs / blob
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(animated_clip(COLOURS))
+        release = threading.Event()
+
+        def mp4(name):
+            release.wait(10)
+            (app.paths.blobs / f"{name}.mp4").write_bytes(mjpeg_mp4(COLOURS))
+            return b""
+
+        client.visual_picture_mp4 = mp4
+        long = "\n\n".join(f"Абзац {n}: " + "слова ответа " * 30 for n in range(8))
+        client.histories["cv"] = {"id": "cv", "title": "Лиса", "busy": False, "projects": [], "messages": [
+            {"id": 31, "role": "user", "model_id": None, "usage": None,
+             "content": [{"type": "text", "text": "сними лису"}]},
+            {"id": 32, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
+                {"type": "tool_call", "id": "f1", "name": "generate_video", "input": {"prompt": "a fox"}}]},
+            {"id": 33, "role": "tool", "model_id": None, "usage": None, "content": [
+                {"type": "tool_result", "id": "f1", "name": "generate_video", "output": "Filmed: 32×32, 1.5 s",
+                 "error": False, "blob": blob, "media_type": "image/webp", "size": copy.stat().st_size}]},
+            *({"id": 40 + n, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+               "content": [{"type": "text", "text": long}]} for n in range(6))]}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        quick.window.resize(1280, 820)
+        app.openChat("cv")
+        wait_until(lambda: len(app.messages.rows) == 8)
+        quick.window.grabWindow()
+        chat = next(i for i in walk(quick.window.contentItem()) if i.metaObject().className().startswith("ChatView"))
+        player = item_named(chat, "toolVideoPlayer")
+        frames = item_named(player, "videoStill")
+
+        def scroll(top):
+            chat.setProperty("follow", False)
+            chat.setProperty("contentY", top)
+            for _ in range(10):
+                QApplication.processEvents()
+
+        def frame_stays():
+            first = frames.property("currentFrame")
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.02)
+            return frames.property("currentFrame") == first
+
+        bottom = chat.property("contentHeight") - chat.property("height")
+        assert bottom > 3000  # the card far above the screen, its row still laid out
+        scroll(-chat.property("topMargin"))
+        plays_meanwhile(player)  # in sight: the WebP plays
+        scroll(bottom)
+        assert item_named(chat, "toolVideoPlayer") is player and not player.property("playing") and frame_stays()
+        at = frames.property("currentFrame")
+        scroll(-chat.property("topMargin"))
+        assert frames.property("currentFrame") >= at  # on from where it stood
+        wait_until(lambda: player.property("playing") and frames.property("currentFrame") > at)
+
+        release.set()  # its MP4 there: it plays it, then scrolled away it pauses it
+        wait_until(lambda: player.property("seekable") and player.property("playing"))
+        media = player.findChild(QMediaPlayer)
+        scroll(bottom)
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PausedState)
+        kept = player.property("position")
+        assert not player.property("playing")
+        scroll(-chat.property("topMargin"))
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+        assert player.property("position") >= kept - 150
+        QMetaObject.invokeMethod(player, "toggle")  # paused by the person: in sight again it stays so
+        scroll(bottom)
+        scroll(-chat.property("topMargin"))
+        assert player.property("held") and media.playbackState() == QMediaPlayer.PlaybackState.PausedState
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
 def test_the_slider_dragged_to_the_middle_shows_the_frames_on_its_way(qapp, tmp_path):
     """48.12.8 (the live check: seeking jerked), measured on the stand's 960×960 clip as the window plays it: a seek

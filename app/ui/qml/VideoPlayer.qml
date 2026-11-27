@@ -9,7 +9,10 @@ import AFO.Video
 // работает воспроизведение видео»: the first time ffmpeg is fetched, ~86 MB, the first frame stood still for minutes;
 // before that, 48.12.8, the MP4 began from its start and the clip began twice); with none to be made the WebP goes on
 // so. Hidden - its own view or any above it - it lets the clip go;
-// the window in the tray or minimized - it pauses (48.12: it went on playing and decoding), and goes on from there.
+// the window in the tray or minimized - it pauses (48.12: it went on playing and decoding), and goes on from there;
+// out of sight (`inSight`: a chat's row scrolled away, still laid out within the chat's 20000px) - so too
+// («Стабилизация» 2026-11-27, «лаги при прокрутке»: each clip above or below went on decoding and painting its frames
+// on the window's thread - the window's log had `video_surface.py paint` among its stalls).
 // VideoControls drives it. The frames are drawn by VideoSurface (app/ui/video_surface.py, 48.12.7): VideoOutput draws
 // with the card's shaders, and the window's software scene graph drew nothing of it - the live check saw the
 // background. A clip with sound (52.5) is heard: the volume and «без звука» are the window's own, one for every
@@ -19,9 +22,10 @@ Item {
     property string source: ""  // the MP4, a file's URL; "" - not made yet; the WebP's own - none can be made
     property string fallback: ""  // the WebP, the hub's file
     property bool held: false  // paused by the person
+    property bool inSight: true  // its place on the screen: a view that scrolls says when it is not
     // the window hidden in the tray or minimized: nobody sees it - paused, not let go (its place in the clip kept)
     readonly property bool away: root.Window.visibility === Window.Hidden || root.Window.visibility === Window.Minimized
-    readonly property bool stopped: root.held || root.away
+    readonly property bool stopped: root.held || root.away || !root.inSight
     readonly property bool mp4: root.source !== "" && root.source !== root.fallback
     readonly property bool seekable: root.mp4 && player.seekable && player.duration > 0
     readonly property int position: root.wanted >= 0 ? root.wanted : player.position

@@ -8,6 +8,7 @@ Column {
     id: calls
     property var tools: []
     property int rowIndex: -1
+    property bool onScreen: true  // the chat's row is on the screen: a video plays only then
     spacing: 2
 
     // The calls live in a ListModel changed only where the list did: a result arriving or a click on one call
@@ -143,6 +144,7 @@ Column {
                     height: frame.width > 0 ? width * frame.height / frame.width : 120  // its frame's shape
                     source: visible ? (clip.made.mp4 || "") : ""  // the chat hidden: the clip let go
                     fallback: call.video !== "" ? Visual.blobUrl(call.video) : ""
+                    inSight: calls.onScreen  // scrolled away: paused, its place kept
                 }
                 VideoControls {
                     id: clipControls
