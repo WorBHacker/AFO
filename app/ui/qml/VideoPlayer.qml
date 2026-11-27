@@ -6,7 +6,8 @@ import AFO.Video
 // (AnimatedImage kept every frame to go back: 960×960×73 - 257 MiB). The hub makes the MP4 as the video is filmed
 // (48.12.8), an older one's the first time it is shown: until it is there the WebP's first frame stands still - the
 // WebP played meanwhile, then the MP4 from its start, and the clip began twice; with none to be made the WebP plays,
-// as Qt reads it, a frame at a time, and does not seek. Hidden - its own view or any above it - it lets the clip go.
+// as Qt reads it, a frame at a time, and does not seek. Hidden - its own view or any above it - it lets the clip go;
+// the window in the tray or minimized - it pauses (48.12: it went on playing and decoding), and goes on from there.
 // VideoControls drives it. The frames are drawn by VideoSurface (app/ui/video_surface.py, 48.12.7): VideoOutput draws
 // with the card's shaders, and the window's software scene graph drew nothing of it - the live check saw the
 // background. A clip with sound (52.5) is heard: the volume and «без звука» are the window's own, one for every
@@ -16,12 +17,15 @@ Item {
     property string source: ""  // the MP4, a file's URL; "" - not made yet; the WebP's own - none can be made
     property string fallback: ""  // the WebP, the hub's file
     property bool held: false  // paused by the person
+    // the window hidden in the tray or minimized: nobody sees it - paused, not let go (its place in the clip kept)
+    readonly property bool away: root.Window.visibility === Window.Hidden || root.Window.visibility === Window.Minimized
+    readonly property bool stopped: root.held || root.away
     readonly property bool mp4: root.source !== "" && root.source !== root.fallback
     readonly property bool seekable: root.mp4 && player.seekable && player.duration > 0
     readonly property int position: root.wanted >= 0 ? root.wanted : player.position
     readonly property int duration: root.mp4 ? player.duration : 0
     readonly property bool loud: root.mp4 && player.hasAudio
-    readonly property bool playing: player.playbackState === MediaPlayer.PlayingState || (still.playing && !root.held)
+    readonly property bool playing: player.playbackState === MediaPlayer.PlayingState || (still.playing && !root.stopped)
     // the frame's size, for a view that takes its shape (a chat's card): the MP4's, or the WebP's while it stands
     readonly property size frame: root.mp4 ? Qt.size(output.frameSize.width, output.frameSize.height)
                                            : Qt.size(still.implicitWidth, still.implicitHeight)
@@ -54,7 +58,7 @@ Item {
         player.setPosition(to)
         wanted = -1
     }
-    onHeldChanged: if (player.source.toString() !== "") held ? player.pause() : player.play()
+    onStoppedChanged: if (player.source.toString() !== "") stopped ? player.pause() : player.play()
     onFallbackChanged: held = false  // another video: it plays
 
     MediaPlayer {
@@ -72,7 +76,7 @@ Item {
             root.going = false
             root.wanted = -1
             if (source.toString() !== "")
-                root.held ? pause() : play()
+                root.stopped ? pause() : play()
         }
     }
     Connections {
@@ -99,6 +103,6 @@ Item {
         cache: false
         fillMode: Image.PreserveAspectFit
         playing: visible && root.source === root.fallback
-        paused: root.held
+        paused: root.stopped
     }
 }

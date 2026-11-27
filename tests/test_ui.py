@@ -7928,6 +7928,25 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         wait_until(lambda: media.source().isEmpty())
         app.setMode("studio")
         wait_until(lambda: not media.source().isEmpty() and video.property("playing"))
+
+        # «Стабилизация» from 48.12 (2026-11-27): the window in the tray or minimized - the clip went on playing and
+        # decoding; now it pauses where it is, the clip kept, and goes on from there when the window is back
+        source = media.source()
+        quick.window.hide()  # the cross: into the tray
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PausedState)  # on the old code it plays on
+        at = media.position()
+        for _ in range(30):
+            QApplication.processEvents()
+            time.sleep(0.01)
+        assert media.position() == at and media.source() == source and not video.property("playing")
+        assert not video.property("held")  # not the person's pause: ▶ is not asked for
+        quick.window.show()
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PlayingState and video.property("playing"))
+        assert media.source() == source  # the same clip, not loaded again
+        quick.window.showMinimized()
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PausedState)
+        quick.window.showNormal()
+        wait_until(lambda: media.playbackState() == QMediaPlayer.PlayingState)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
