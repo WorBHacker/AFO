@@ -193,11 +193,15 @@ def test_reasoning_a_model_writes_between_its_own_marks_is_reasoning():
     assert run(*({"content": p} for p in kimi)) == ("Хорошо, пользователь спрашивает о погоде…", "Привет! Ясно.")
     assert run({"content": "<think>шаг 1</think>Ответ"}) == ("шаг 1", "Ответ")
     assert run({"content": " "}, {"content": "<thinking"}, {"content": " — это мысли"}) == (
-        "", " <thinking — это мысли")  # only like a mark: the answer as it is
+        "",
+        " <thinking — это мысли",
+    )  # only like a mark: the answer as it is
     assert run({"content": "Ответ: "}, {"content": "<think>нет</think>"}) == ("", "Ответ: <think>нет</think>")
     assert run({"reasoning_content": "сам"}, {"content": "<think>x</think>y"}) == ("сам", "<think>x</think>y")
     assert run({"content": "◁think▷"}, {"content": "думаю и"}, {"content": " обрываюсь ◁/"}) == (
-        "думаю и обрываюсь ◁/", "")  # never closed: all of it reasoning, the held piece too
+        "думаю и обрываюсь ◁/",
+        "",
+    )  # never closed: all of it reasoning, the held piece too
 
 
 def test_a_local_model_is_asked_only_the_depths_its_template_takes():

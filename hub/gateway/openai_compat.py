@@ -118,7 +118,7 @@ class _Marks:
         for mark, close in THINK_MARKS.items():
             if head.startswith(mark):
                 self.state, self.close, self.held = "inside", close, ""
-                return self._inside(head[len(mark):])
+                return self._inside(head[len(mark) :])
         if head and not any(mark.startswith(head) for mark in THINK_MARKS):
             self.state = "over"
             return "", self.flush()
@@ -132,7 +132,7 @@ class _Marks:
             return thought, self._after(answer)
         keep = next((n for n in range(min(len(self.close) - 1, len(held)), 0, -1)
                      if self.close.startswith(held[-n:])), 0)  # fmt: skip
-        self.held = held[len(held) - keep:] if keep else ""
+        self.held = held[len(held) - keep :] if keep else ""
         return held[: len(held) - keep], ""
 
     def _after(self, piece: str) -> str:
