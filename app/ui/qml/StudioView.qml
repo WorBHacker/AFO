@@ -471,23 +471,31 @@ Item {
             anchors.top: player.visible ? player.bottom : canvas.bottom
             anchors.topMargin: 10
             spacing: 8
-            visible: Visual.done
+            visible: Visual.done || Visual.failed
+            PlainButton {  // (2026-11-27) the one that did not come out - «хаб перезапускался», the engine refused
+                objectName: "visualRetry"
+                visible: Visual.failed
+                iconName: "refresh"
+                text: qsTr("Повторить")
+                onClicked: Visual.retry()
+            }
             PlainButton {
                 objectName: "visualAgain"
+                visible: Visual.done
                 iconName: "refresh"
                 text: qsTr("Ещё вариант")
                 onClicked: Visual.again()
             }
             PlainButton {
                 objectName: "visualFromThis"
-                visible: Visual.videoFile === ""
+                visible: Visual.done && Visual.videoFile === ""
                 iconName: "image"
                 text: qsTr("По этой картинке")
                 onClicked: Visual.fromThis()
             }
             PlainButton {
                 objectName: "visualImprove"  // 54.6: twice as large, 60 a second, slowed - a new video beside
-                visible: Visual.videoFile !== ""
+                visible: Visual.done && Visual.videoFile !== ""
                 iconName: "sparkle"
                 text: qsTr("Улучшить…")
                 onClicked: {
@@ -497,17 +505,20 @@ Item {
             }
             PlainButton {
                 objectName: "visualSave"
+                visible: Visual.done
                 iconName: "download"
                 text: qsTr("Сохранить как…")
                 onClicked: saveDialog.open()
             }
             PlainButton {
+                visible: Visual.done
                 iconName: "folder"
                 text: qsTr("Папка с картинками")
                 onClicked: Visual.openFolder()
             }
             PlainButton {  // (2026-11-25) for good, asked first
                 objectName: "visualDelete"
+                visible: Visual.done
                 iconName: "trash"
                 text: qsTr("Удалить")
                 onClicked: Visual.remove("")

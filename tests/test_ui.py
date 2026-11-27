@@ -8249,6 +8249,65 @@ def test_the_studios_queue_and_gallery(qapp):
         quick.close()
 
 
+def test_a_picture_or_a_video_that_did_not_come_out_is_asked_again_by_a_click(qapp):
+    """The user's word at 48.10: a Studio job the hub's restart failed («хаб перезапускался — картинка не нарисована»)
+    had no button under it at all - those under the frame were only for one done. Now «Повторить» is there: the same
+    description and seed, asked again; the buttons of one done are not (nothing to save or improve). A video the
+    same. Real QML, mouse clicks."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса в снегу")
+        app.openUi("draw")
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        wait_until(lambda: studio.property("visible") and not app.bg.busy and view.hasModels)
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        job = client.visual_jobs_list[0]
+        failed = {**job, "status": "failed", "error": "хаб перезапускался — картинка не нарисована"}
+        app.on_event({"type": "visual.changed", "payload": {"job": failed}})
+        assert view.statusText == "не вышло: хаб перезапускался — картинка не нарисована" and view.failed
+        retry = item_named(studio, "visualRetry")
+        assert retry is not None and retry.property("visible")  # on the old code: no such button
+        for name in ("visualAgain", "visualSave", "visualDelete", "visualImprove"):
+            assert not item_named(studio, name).property("visible"), name
+        view.setPrompt("другое описание")  # typed meanwhile: the one that failed is asked again, not this
+        click(window, retry)
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 2)
+        assert client.visual_calls[-1] == ("draw", {**client.visual_calls[0][1], "seed": 7})  # its seed, as it was
+        assert client.visual_calls[-1][1]["prompt"] == "рыжая лиса в снегу" and view.busy and not view.failed
+        again = {**client.visual_jobs_list[0], "status": "failed", "error": "картинка вышла пустой"}
+        app.on_event({"type": "visual.changed", "payload": {"job": again}})
+
+        view.setMode("video")  # a picture that failed is not asked again as a video
+        assert not view.failed and not item_named(studio, "visualRetry").property("visible")
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "video")
+        video = {**client.visual_jobs_list[0], "status": "failed", "error": "хаб перезапускался — видео не снято"}
+        app.on_event({"type": "visual.changed", "payload": {"job": video}})
+        assert view.failed and item_named(studio, "visualRetry").property("visible")
+        click(window, item_named(studio, "visualRetry"))
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 4)
+        assert client.visual_calls[-1][0] == "video" and client.visual_calls[-1][1]["seed"] == 7
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_picture_and_a_video_are_deleted_from_the_studio_by_clicks(qapp):
     """2026-11-25 (the user's word): «Удалить» under the picture or video shown, ✕ on a thumbnail of «Последние» - asked
     first («Отмена» deletes nothing), then the job's files are gone from the disk and it from the lists. The video

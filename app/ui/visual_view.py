@@ -510,6 +510,25 @@ class VisualView(QObject):
             return self._video_file(self._job) is not None
         return self._job.get("status") == "done" and self._job.get("id", "") in self.provider.pictures
 
+    @Property(bool, notify=changed)
+    def failed(self) -> bool:
+        """The picture or video on the canvas did not come out - the hub restarted meanwhile, the engine refused: it
+        can be asked again («Повторить», the user's word at 48.10: there was no button under it at all). Not one being
+        improved - «Улучшить ролик» has its own sheet; not one of the other kind than the canvas makes now."""
+        job = self._job
+        return job.get("status") == "failed" and not job.get("enhance") and (
+            (job.get("kind") == "video") == (self._mode == "video"))  # fmt: skip
+
+    @Slot()
+    def retry(self) -> None:
+        """«Повторить»: the job that did not come out, asked again - its description and its seed; the rest as the
+        canvas has it (its model, the first frame, the shape)."""
+        if not self.failed:
+            return
+        self._prompt = self._job.get("prompt") or self._prompt
+        seed = self._job.get("seed")
+        self._start(seed=int(seed) if isinstance(seed, int) else -1)
+
     @Property(list, notify=changed)
     def recent(self) -> list:
         """The gallery: the latest pictures and videos done - all, or one kind (48.7в)."""
