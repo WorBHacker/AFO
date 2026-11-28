@@ -66,7 +66,10 @@ def test_faster_or_better_for_a_local_model():
              "size_bytes": 4 * GIB}  # fmt: skip
     view = {"editable": True, "context": 32768, "info": {**small, "context_trained": 131072}}
     fast = model_setup.preset_draft("fast", draft, view, 16303)
-    assert (fast["context"], fast["cache_type"], fast["gpu_mode"]) == ("8192", "q8_0", "all")
+    # «Стабилизация», portion 6: 16K, not 8K - a project's tool definitions took 2.1K of 8K before the first message
+    assert (fast["context"], fast["cache_type"], fast["gpu_mode"]) == ("16384", "q8_0", "all")
+    assert model_setup.preset_of({**draft, "context": "8192", "cache_type": "q8_0", "gpu_mode": "all"}, view,
+                                 16303) == ""  # a model set to the old «Быстрее»: no preset of the three  # fmt: skip
     assert model_setup.preset_of(fast, view, 16303) == "fast" and model_setup.preset_of(draft, view, 16303) == ""
     trained = {**view, "info": {**small, "context_trained": 40960}}
     quality = model_setup.preset_draft("quality", draft, trained, 16303)  # never past what the model was trained for

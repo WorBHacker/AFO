@@ -241,8 +241,9 @@ def history_rows(history: list[dict[str, Any]], current: int) -> list[dict[str, 
 CACHE_CHOICES = ("f16", "q8_0", "q4_0")
 # «Быстрее ↔ Качественнее» (10.6): the launch settings in plain words - how much the model remembers of a
 # conversation and how exactly; the layers - all on the graphics card when the model fits it so, else as many as fit
-# (0.1.15); the line under the presets says whether it fits
-LAUNCH_PRESETS = {"fast": {"context": 8192, "cache_type": "q8_0"},
+# (0.1.15); the line under the presets says whether it fits. «Быстрее» - 16K («Стабилизация», portion 6: with 8K a
+# project's tool definitions took 2.1K before the first message)
+LAUNCH_PRESETS = {"fast": {"context": 16384, "cache_type": "q8_0"},
                   "balanced": {"context": 32768, "cache_type": "q8_0"},
                   "quality": {"context": 65536, "cache_type": "f16"}}  # fmt: skip
 

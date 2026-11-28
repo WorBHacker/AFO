@@ -528,7 +528,7 @@
  "Быстрее": "Faster",
  "Быстрее — 20 шагов, 16 кадров в секунду, остальные досчитывает «Плавность».": "Faster — 20 steps, 16 frames a second, the rest made by «Smoothness».",
  "Быстрее — 20 шагов.": "Faster — 20 steps.",
- "Быстрее — модель помнит последние ~8 тыс. токенов разговора; Баланс — ~32 тыс.; Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. На видеокарту ляжет столько модели, сколько поместится. Ниже — точные настройки и оценка, поместится ли.": "Faster — the model remembers the last ~8K tokens of a conversation; Balance — ~32K; Higher quality — up to ~64K and an uncompressed cache, but more VRAM. As much of the model as fits goes onto the graphics card. Below — the exact settings and an estimate of whether it fits.",
+ "Быстрее — модель помнит последние ~16 тыс. токенов разговора; Баланс — ~32 тыс.; Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. На видеокарту ляжет столько модели, сколько поместится. Ниже — точные настройки и оценка, поместится ли.": "Faster — the model remembers the last ~16K tokens of a conversation; Balance — ~32K; Higher quality — up to ~64K and an uncompressed cache, but more VRAM. As much of the model as fits goes onto the graphics card. Below — the exact settings and an estimate of whether it fits.",
  "Быстрое увеличение": "Fast enlargement",
  "Бюджет «{title}» исчерпан: {used} из {limit}. Новые платные запросы — запрещены": "Budget “{title}” is used up: {used} of {limit}. New paid requests are blocked",
  "Бюджет «{title}» исчерпан: {used} из {limit}. Новые платные запросы — только с подтверждением": "Budget “{title}” is used up: {used} of {limit}. New paid requests need your approval",
