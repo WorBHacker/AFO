@@ -463,6 +463,23 @@ def status_line(jobs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"name": f"{job['name']}{more}", "text": text, "short": short, "percent": pct / 100, "tip": tip}
 
 
+def parts_line(loads: list[dict[str, Any]]) -> dict[str, Any]:
+    """The status bar's word on a part downloading (`InstallView.partLoads`) - as an install's; '' - none."""
+    if not loads:
+        return {"name": "", "text": "", "short": "", "percent": 0.0, "tip": ""}
+    load = loads[0]
+    more = tr(" (и ещё {count})", count=len(loads) - 1) if len(loads) > 1 else ""
+    tip = tr("«{name}» для «{where}»: {state}. Нажмите — «Установки»", name=load["name"], where=load["where"],
+             state=load["note"])  # fmt: skip
+    return {
+        "name": f"{load['name']}{more}",
+        "text": load["note"],
+        "short": f"{load['percent']} %",
+        "percent": load["percent"] / 100,
+        "tip": tip,
+    }
+
+
 def trial_line(jobs: list[dict[str, Any]]) -> str:
     """«Пробный запуск» of the models from the drives going (34.5): which one, and how many wait after it; '' - none."""
     going = sorted((j for j in jobs if not j.get("own_files", 1) and j["status"] in ("trialwait", "trial")),
@@ -577,10 +594,13 @@ class InstallView(QObject):
     pendingChanged = Signal()  # an action asked of the hub (0.1.16 step 9а): its button and its word, not the sheet
     shownAsked = Signal()  # the Studio led to a card (the fix after 0.1.15): the sheet scrolls to it once
     partsChanged = Signal()  # a part of «Улучшить…» or «Звук фильма» downloads (2026-11-27): «Установки» lists it
+    statusChanged = Signal()  # the status bar's line: an install's, or a part's download (portion 5)
 
     def __init__(self, app: Controller):
         super().__init__(app)
         self.app = app
+        self.changed.connect(self.statusChanged)
+        self.partsChanged.connect(self.statusChanged)
         self._system: dict[str, Any] = {}
         self._kept: dict[str, Any] = {}  # computer.json, until the hub answers (35.2)
         self._opened = False  # the sheet has been opened: it loads again when the hub connects (35.1)
@@ -663,6 +683,23 @@ class InstallView(QObject):
         views = ((self.app.enhance_view, tr("Улучшить ролик")), (self.app.film_view, tr("Звук фильма")))
         return [{"id": p["id"], "name": p["name"], "where": where, "note": p["note"], "percent": p["percent"]}
                 for view, where in views for p in view._parts if p["state"] == "loading"]  # fmt: skip
+
+    @Property(list, notify=partsChanged)
+    def partsHere(self) -> list:
+        """(«Стабилизация», portion 5) The parts of «Улучшить…» and «Звук фильма» on the disk, each with «Удалить» -
+        in «Установки» beside the models, not only in their own sheet."""
+        views = (("enhance", self.app.enhance_view, tr("Улучшить ролик")), ("sound", self.app.film_view,
+                                                                           tr("Звук фильма")))  # fmt: skip
+        return [{"id": p["id"], "name": p["name"], "where": where, "note": p["note"], "kind": kind}
+                for kind, view, where in views for p in view._parts if p["state"] == "ready"]  # fmt: skip
+
+    @Slot(str, str)
+    def removePart(self, kind: str, part: str) -> None:
+        """«Удалить» on a part that is here: as its own sheet removes it, asked first."""
+        if kind == "sound":
+            self.app.film_view.removeSound(part)
+        elif kind == "enhance":
+            self.app.enhance_view.removePart(part)
 
     @Property(list, notify=changed)
     def catalog(self) -> list:
@@ -847,10 +884,12 @@ class InstallView(QObject):
                  and j["status"] not in ("cancelled", "removed")]  # fmt: skip
         return found[0] if found else None  # the list is newest first
 
-    @Property("QVariantMap", notify=changed)
+    @Property("QVariantMap", notify=statusChanged)
     def status(self) -> dict:
-        """The status bar: the install going on (text, 0-1, tooltip)."""
-        return status_line(self._jobs)
+        """The status bar: the install going on (text, 0-1, tooltip) - or, none going on, a part of «Улучшить…» or
+        «Звук фильма» downloading («Стабилизация», portion 5: it was seen in «Установки» alone)."""
+        line = status_line(self._jobs)
+        return line if line["name"] else parts_line(self.partLoads)
 
     @Slot()
     def showJobs(self) -> None:
@@ -968,6 +1007,8 @@ class InstallView(QObject):
         self._system_tries = 0
         self._load_system()
         self._load_jobs()
+        self.app.film_view.load_sound()  # the parts that are here (portion 5), the sheets of their own not opened
+        self.app.enhance_view.load_parts()
         if not self._catalog and not self._catalog_loading:
             self._load_catalog()
 

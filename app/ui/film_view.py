@@ -637,6 +637,11 @@ class FilmView(QObject):
         self.app._call(lambda: self.app.client.films(), films, lambda _e: None)
         self.app._call(lambda: self.app.client.sound(), self._take_sound, lambda _e: None)
 
+    def load_sound(self) -> None:
+        """The engine of sound and its parts, asked of the hub - «Установки» lists those that are here (portion 5)."""
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.sound(), self._take_sound, lambda _e: None)
+
     def _take_sound(self, state: dict[str, Any]) -> None:
         """The engine of sound and its parts as the hub has them now (53.6)."""
         self._sounds = state or {}

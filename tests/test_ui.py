@@ -8751,6 +8751,126 @@ def test_the_studio_makes_a_voice_music_and_a_sound_and_plays_them(qapp, tmp_pat
         quick.close()
 
 
+def test_a_chats_picture_is_read_at_the_size_it_is_shown(qapp):
+    """«Стабилизация», portion 5 (a leftover of the lags of 2026-11-27): a picture a chat's model drew was read and
+    drawn at its whole size - 1600 wide here - in a frame 420 wide; now the frame asks for its own size at most, and
+    the pictures' provider gives no larger than asked (its shape kept, never made larger). Real QML."""
+    import math
+
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize
+    from PySide6.QtGui import QColor, QImage
+
+    from app.ui.main import QuickApp
+    from app.ui.visual_view import shrunk
+
+    big = QImage(1600, 900, QImage.Format.Format_RGB32)
+    big.fill(QColor(200, 80, 40))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    big.save(buffer, "PNG")
+    assert shrunk(big, QSize(420, 0)).size() == QSize(420, 236)
+    assert shrunk(big, QSize(400, 400)).size() == QSize(400, 225)
+    assert shrunk(big, QSize(3000, 0)).size() == QSize(1600, 900) and shrunk(big, QSize()).size() == QSize(1600, 900)
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_picture = lambda blob: bytes(data.data())
+        blob = "cd" * 32
+        client.histories["cp"] = {"id": "cp", "title": "Лиса", "busy": False, "projects": [], "messages": [
+            {"id": 21, "role": "user", "model_id": None, "usage": None,
+             "content": [{"type": "text", "text": "нарисуй лису"}]},
+            {"id": 22, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
+                {"type": "tool_call", "id": "g1", "name": "generate_image", "input": {"prompt": "a red fox"}}]},
+            {"id": 23, "role": "tool", "model_id": None, "usage": None, "content": [
+                {"type": "tool_result", "id": "g1", "name": "generate_image", "output": "Drawn: 1600×900",
+                 "error": False, "blob": blob, "media_type": "image/png", "size": 100}]},
+            {"id": 24, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+             "content": [{"type": "text", "text": "Готово."}]}]}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        window.resize(1200, 800)
+        window.show()
+        app.openChat("cp")
+        wait_until(lambda: len(app.messages.rows) == 3)
+        found = []
+
+        def shown():
+            window.grabWindow()
+            picture = item_named(window.contentItem(), "toolPicture")
+            found[:] = [picture] if picture is not None and picture.property("implicitWidth") > 0 else []  # read
+            return bool(found)
+
+        wait_until(shown, timeout=10)
+        widest = math.ceil(420 * window.devicePixelRatio())
+        width, height = found[0].property("implicitWidth"), found[0].property("implicitHeight")
+        assert width <= widest, width  # the old code: 1600
+        assert width / height == pytest.approx(1600 / 900, rel=0.01) and quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_parts_download_is_in_the_status_bar_and_the_parts_here_are_in_installs(qapp):
+    """«Стабилизация», portion 5 (О2 and Т of the portion before): a part of «Звук фильма» or «Улучшить…»
+    downloading is in the status bar at the bottom of the window as an install is - its name, how far, a click opens
+    «Установки» (before: in «Установки» alone); the parts on the disk are listed there with «Удалить», asked first, as
+    in their own sheets - which were never opened. Real QML, clicks."""
+    from PySide6.QtCore import QObject, QPointF
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.sound_state["parts"][1].update(state="ready")  # «Музыка» is here
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        window.resize(1400, 900)
+        window.show()
+        status = window.findChild(QObject, "statusInstall")
+        assert not status.property("visible")
+        client.sound_state["parts"][0].update(state="loading", got=1408527600, speed=20_000_000)
+        app.on_event({"type": "sound.changed", "payload": client.sound()})  # the hub, as the download goes
+        wait_until(lambda: status.property("visible"))  # the old code: nothing at the bottom
+        line = app.install_view.status
+        assert line["name"] == "Голос диктора" and line["text"].startswith("скачивается: 50%")
+        assert line["percent"] == 0.5 and line["short"] == "50 %"
+        assert "Звук фильма" in line["tip"]
+        click(window, status)
+        wait_until(lambda: not app.bg.busy and app.install_view.tab == "jobs")
+
+        def named(name):
+            return item_named(window.contentItem(), name) or window.findChild(QObject, name)
+
+        def settled(name):  # the sheet slid in: its button inside the window
+            item = named(name)
+            window.grabWindow()
+            return item is not None and item.mapToScene(QPointF(item.width(), 0)).x() <= window.width()
+
+        wait_until(lambda: settled("partRemove_music") and settled("partRemove_smooth"))
+        assert [(p["name"], p["where"]) for p in app.install_view.partsHere] == [
+            ("Плавность", "Улучшить ролик"), ("Музыка", "Звук фильма")]  # fmt: skip
+        click(window, named("partRemove_music"))
+        assert app.question["title"] == "Удалить «Музыка»?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and client.sound_calls[-1] == ("remove", "music"))
+        wait_until(lambda: named("partHere_music") is None)
+        click(window, named("partRemove_smooth"))
+        assert app.question["title"] == "Удалить «Плавность»?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and client.enhance_calls[-1] == ("remove", "smooth"))
+
+        client.sound_state["parts"][0].update(state="ready", got=0)  # the download done: nothing at the bottom
+        app.on_event({"type": "sound.changed", "payload": client.sound()})
+        wait_until(lambda: not status.property("visible"))
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_picture_and_a_video_are_deleted_from_the_studio_by_clicks(qapp):
     """2026-11-25 (the user's word): «Удалить» under the picture or video shown, ✕ on a thumbnail of «Последние» - asked
     first («Отмена» deletes nothing), then the job's files are gone from the disk and it from the lists. The video

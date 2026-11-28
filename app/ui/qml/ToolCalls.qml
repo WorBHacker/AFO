@@ -113,6 +113,8 @@ Column {
                 x: 28
                 width: Math.min(420, parent.width - 28)
                 height: implicitWidth > 0 ? width * implicitHeight / implicitWidth : 120
+                // («Стабилизация», portion 5) read at the size it is shown at most - not its whole size
+                sourceSize.width: Math.ceil(420 * Screen.devicePixelRatio)
                 source: call.picture
                 asynchronous: true  // the provider asks the hub the first time: not on the window's thread
                 fillMode: Image.PreserveAspectFit

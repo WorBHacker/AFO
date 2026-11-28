@@ -804,7 +804,7 @@ Sheet {
         spacing: 8
         Note { objectName: "jobsPending"; visible: text !== ""; text: Installer.pendingText; color: Theme.p.accent }
         Note {
-            visible: Installer.jobs.length === 0 && Installer.partLoads.length === 0
+            visible: Installer.jobs.length === 0 && Installer.partLoads.length === 0 && Installer.partsHere.length === 0
             text: qsTr("Установок пока нет. Выберите модель в «Подборке».")
             color: Theme.p.faint
         }
@@ -857,6 +857,57 @@ Sheet {
                         }
                     }
                     Note { objectName: "partLoadNote"; text: load.modelData.note; color: Theme.p.faint }
+                }
+            }
+        }
+        // (portion 5) the parts that are here - their size and «Удалить», as in their own sheet
+        Repeater {
+            model: Installer.partsHere
+            delegate: Rectangle {
+                id: here
+                objectName: "partHere_" + here.modelData.id
+                required property var modelData
+                width: parent ? parent.width : 600
+                height: 52
+                radius: 8
+                color: Theme.p.card
+                border.color: Theme.p.hairline
+                Row {
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 28 - hereRemove.width
+                    spacing: 8
+                    Text {
+                        width: Math.max(0, Math.min(implicitWidth, parent.width * 0.5))
+                        elide: Text.ElideRight
+                        text: here.modelData.name
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Badge {
+                        text: here.modelData.where
+                        tint: Theme.p.accent
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Note {
+                        width: Math.max(0, parent.width * 0.3)
+                        text: here.modelData.note
+                        color: Theme.p.faint
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                PlainButton {
+                    id: hereRemove
+                    objectName: "partRemove_" + here.modelData.id
+                    anchors.right: parent.right
+                    anchors.rightMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "trash"
+                    text: qsTr("Удалить")
+                    onClicked: Installer.removePart(here.modelData.kind, here.modelData.id)
                 }
             }
         }

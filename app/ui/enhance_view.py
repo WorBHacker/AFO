@@ -382,6 +382,11 @@ class EnhanceView(QObject):
                           "needed": p["id"] in wanted, "getText": tr("Скачать {size}", size=size)})  # fmt: skip
         return parts
 
+    def load_parts(self) -> None:
+        """The parts, asked of the hub - «Установки» lists those that are here (portion 5)."""
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.enhance(), self._take, lambda _e: None)
+
     def _take(self, state: dict[str, Any]) -> None:
         self._state = state or {}
         parts = self._parts_now()

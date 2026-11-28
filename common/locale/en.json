@@ -417,6 +417,7 @@
  "«{model}» ставил не AFO — удалите её из config.yaml сами": "“{model}” was not installed by AFO — delete it from config.yaml yourself",
  "«{model}» убрали из config.yaml, пока шёл замер": "“{model}” was taken out of config.yaml while it was being measured",
  "«{name}» больше {size} МБ — такой не отправить": "“{name}” is over {size} MB — too big to send",
+ "«{name}» для «{where}»: {state}. Нажмите — «Установки»": "“{name}” for “{where}”: {state}. Click: “Installs”",
  "«{name}» добавлена. {advice}": "“{name}” added. {advice}",
  "«{name}» добавляется в llama-swap; проверить её — «Пробный запуск»": "“{name}” is being added to llama-swap; to check it — “Trial run”",
  "«{name}» ещё не установлена — её установку можно отменить": "“{name}” is not installed yet — its install can be canceled",

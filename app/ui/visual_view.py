@@ -26,7 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QBuffer, QByteArray, QIODevice, QObject, QSize, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QBuffer, QByteArray, QIODevice, QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
@@ -122,7 +122,24 @@ class PictureProvider(QQuickImageProvider):
             data = self.preview if kind == "preview" else self.pictures.get(key, b"")
         image = QImage()
         image.loadFromData(data)
+        return shrunk(image, requested)
+
+
+def shrunk(image: QImage, wanted: QSize) -> QImage:
+    """A picture no larger than an Image's `sourceSize` asks («Стабилизация», portion 5: a chat's picture was held
+    and drawn at its whole size, 1344 × 768 and more, shown 420 wide): its shape kept, never made larger; nothing
+    asked - as it is."""
+    width, height = wanted.width(), wanted.height()
+    if image.isNull() or (width <= 0 and height <= 0):
         return image
+    if width > 0 and height > 0:
+        fits = image.width() <= width and image.height() <= height
+        return image if fits else image.scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio,
+                                               Qt.TransformationMode.SmoothTransformation)  # fmt: skip
+    smooth = Qt.TransformationMode.SmoothTransformation
+    if width > 0:
+        return image if image.width() <= width else image.scaledToWidth(width, smooth)
+    return image if image.height() <= height else image.scaledToHeight(height, smooth)
 
 
 LOUD = ".webm"  # a clip with sound (52.5): the engine's WebM - no picture to QML; its poster lies beside it
