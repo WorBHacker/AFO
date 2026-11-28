@@ -23,8 +23,9 @@ if TYPE_CHECKING:
 
 KINDS = [("voice", N_("Голос")), ("music", N_("Музыка")), ("effect", N_("Звуки"))]
 PARTS = {"voice": "voice", "music": "music", "effect": "effects"}  # the hub's sound_pieces.PARTS
-LENGTHS = {"music": [("15", N_("15 с")), ("30", N_("30 с")), ("60", N_("1 мин"))],
-           "effect": [("3", N_("3 с")), ("5", N_("5 с")), ("10", N_("10 с"))]}  # fmt: skip
+# a length: the same three choices for music and a sound - one switch -, each its own seconds
+LENGTHS = {"music": [("short", N_("15 с"), 15.0), ("middle", N_("30 с"), 30.0), ("long", N_("1 мин"), 60.0)],
+           "effect": [("short", N_("3 с"), 3.0), ("middle", N_("5 с"), 5.0), ("long", N_("10 с"), 10.0)]}  # fmt: skip
 HINTS = {"voice": N_("Текст, который прочитать голосом"),
          "music": N_("Какая музыка? Например: спокойное пианино, лёгкий джаз. Лучше по-английски"),
          "effect": N_("Какой звук? Лучше по-английски: rain on a tin roof, birds in a forest")}  # fmt: skip
@@ -49,7 +50,7 @@ class AudioView(QObject):
         self._kind = "voice"
         self._words = {k: "" for k, _n in KINDS}
         self._voice = ""
-        self._length = {"music": "30", "effect": "5"}
+        self._length = {"music": "middle", "effect": "middle"}
         self._pieces: list[dict[str, Any]] = []
         self._sounds: dict[str, Any] = {}  # the engine of sound and its parts (/v1/sound)
         self._chosen = ""  # the piece in the player
@@ -95,7 +96,7 @@ class AudioView(QObject):
 
     @Property(list, notify=changed)
     def lengths(self) -> list:
-        return [{"id": k, "name": tr(n)} for k, n in LENGTHS.get(self._kind, [])]
+        return [{"id": k, "name": tr(n)} for k, n, _s in LENGTHS.get(self._kind, [])]
 
     @Property(str, notify=changed)
     def length(self) -> str:
@@ -175,7 +176,7 @@ class AudioView(QObject):
 
     @Slot(str)
     def setLength(self, length: str) -> None:
-        if length in {k for k, _n in LENGTHS.get(self._kind, [])}:
+        if length in {k for k, _n, _s in LENGTHS.get(self._kind, [])}:
             self._length[self._kind] = length
             self.changed.emit()
 
@@ -189,7 +190,7 @@ class AudioView(QObject):
         if self._kind == "voice":
             spec["voice"] = self._voice_id()
         else:
-            spec["seconds"] = float(self._length[self._kind])
+            spec["seconds"] = next(s for k, _n, s in LENGTHS[self._kind] if k == self._length[self._kind])
 
         def made(result: dict[str, Any]) -> None:
             self._keep(result.get("piece") or {})
