@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 from common import invisible
 from common.i18n import N_, tr
 
-from . import changes, projects
+from . import changes, gpu_card, projects
 from .db import Database, utc_now
 from .events import EventBus
 
@@ -642,7 +642,8 @@ class ApprovalQueue:
                 return Decision(True, approval_id=approval_id)
             if not future.done():  # answered already: its `approval.decided` has gone out
                 await self._bus.publish("approval.requested", {"approval": row}, project_id=project_id)
-            return await future
+            with gpu_card.aside():  # a turn waiting for the person holds nothing back on the card (portion 6)
+                return await future
         except asyncio.CancelledError:  # whoever asked went away (its request was cut): close the row
             with contextlib.suppress(ApprovalError):
                 await self._close(approval_id, "expired", None, EXPIRED, "hub")

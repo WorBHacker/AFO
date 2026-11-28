@@ -47,7 +47,7 @@ from typing import Any
 
 from common.i18n import N_, tr
 
-from . import guard, judge, memory, store
+from . import gpu_card, guard, judge, memory, store
 from .db import Database, utc_now
 from .events import EventBus
 from .projects import Project, ProjectError, get_project
@@ -566,7 +566,8 @@ class Autonomy:
                                                  "options": offered})  # fmt: skip
         stopping = asyncio.create_task(cancel.wait())
         try:
-            await asyncio.wait({future, stopping}, return_when=asyncio.FIRST_COMPLETED)
+            with gpu_card.aside():  # a turn waiting for the person holds nothing back on the card (portion 6)
+                await asyncio.wait({future, stopping}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             stopping.cancel()
             self._answers.pop(qid, None)

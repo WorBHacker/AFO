@@ -43,7 +43,11 @@ work, which does not wait QUIET_S then: the card still is enough.
 The person's work without them on local models goes through one queue (61.8, `lane`): an agent's run (a task of a
 batch too), a goal's turn, the judge's question - one at a time, in the order they came; its model stays on the card
 for the whole of it instead of being swapped for another's at each request. The person's own chat is never in it
-(48.9б1): it goes at once."""
+(48.9б1): it goes at once. And while the person's own local turn goes on (a chat's answer with its tools, counted
+from its start to its end - `turn`), that work waits before each of its requests («Стабилизация», portion 6, found at
+61.8: between its requests and theirs llama-swap swapped the two models to and fro) - not while the turn itself waits
+for the person or for that work (`aside`: an approval, a question, its delegated tasks), or it would wait for
+itself."""
 
 from __future__ import annotations
 
@@ -66,6 +70,10 @@ AGENT = "agent"  # an agent's run, an autonomous run, a goal's turn, a task on a
 COMPLETION = "completion"  # the editor's grey text
 OPENAI = "openai"  # an outside client through /v1/openai
 ASKER: ContextVar[str] = ContextVar("asker", default=AGENT)  # nobody named: a person's unattended work
+# the turn counted on the card in this context (`GpuCard.turn`) - whose, on which card; None - none, or a cloud one
+HELD: ContextVar[tuple[GpuCard, str] | None] = ContextVar("held", default=None)
+# what work without the person waiting for their local turn says (portion 6)
+PERSON_WORDS = N_("видеокарта отвечает в вашем чате — продолжу после его ответа")
 QUIET_S = 180.0  # background work waits for the card still this long (48.9б2): time to think of the next message
 BUSY_PCT = 15  # the card at this much load or more works for someone - a game, another program
 # each holder's and asker's rank: 1 the person now, 2 their work without them, 3 an install's trial, 4 tuning (48.9б1)
@@ -131,6 +139,9 @@ class GpuCard:
         self.looked: Callable[[], float] = time.monotonic
         # the person's work without them on local models, one at a time (61.8): a run, a goal's turn, the judge
         self.lane = asyncio.Semaphore(1)
+        self._person = asyncio.Event()  # no local request or turn of the person now (portion 6): their work goes on
+        self._person.set()
+        self._aside: dict[str, int] = {}  # turns of `asked` waiting aside now (`aside`) -> how many
 
     @contextlib.asynccontextmanager
     async def unattended(self, local: bool = True) -> AsyncIterator[None]:
@@ -157,14 +168,49 @@ class GpuCard:
         """A local request - or a turn, a completion - goes on in this scope: counted as `who`'s (by default, whose
         the context says)."""
         who = who or ASKER.get()
-        self.asked[who] = self.asked.get(who, 0) + 1
+        self._count(who, 1)
         try:
             yield
         finally:
-            if (left := self.asked.get(who, 1) - 1) > 0:
-                self.asked[who] = left
+            self._count(who, -1)
+
+    @contextlib.contextmanager
+    def turn(self, who: str, local: bool) -> Iterator[None]:
+        """A chat's turn - its answer with its tools - counted on the card as `who`'s from start to end when its model
+        is local (48.9а); what it waits for in the middle - the person, its delegated tasks - it waits for in `aside`
+        (portion 6). In a coroutine, not an async generator (HELD is reset in the context it was set in)."""
+        token = HELD.set((self, who) if local else None)
+        try:
+            if local:
+                with self.asking(who):
+                    yield
             else:
-                self.asked.pop(who, None)
+                yield
+        finally:
+            HELD.reset(token)
+
+    def person_busy(self) -> bool:
+        """A local request or turn of the person goes on (portion 6)."""
+        return not self._person.is_set()
+
+    async def after_person(self, cancel: asyncio.Event) -> None:
+        """Work without the person, before its next local request: until no local turn of theirs goes on - or the
+        user stops it (portion 6)."""
+        while not self._person.is_set() and not cancel.is_set():
+            await _either(cancel, self._person)
+
+    def _count(self, who: str, by: int, counts: dict[str, int] | None = None) -> None:
+        """`who` asks the local models `by` more (or fewer) - or, in `_aside`, waits aside: whether the person is at
+        work on them now follows. Tuning and a trial look at `asked` alone: a turn waiting aside holds them back."""
+        counts = self.asked if counts is None else counts
+        if (left := counts.get(who, 0) + by) > 0:
+            counts[who] = left
+        else:
+            counts.pop(who, None)
+        if any(rank(asker) == 1 and n > self._aside.get(asker, 0) for asker, n in self.asked.items()):
+            self._person.clear()
+        else:
+            self._person.set()
 
     def try_take(self, holder: str, *, chats: bool = False, stop: Callable[[], None] | None = None,
                  model: str = "") -> bool:  # fmt: skip
@@ -269,6 +315,25 @@ class GpuCard:
             return waited
         await _either(cancel, self.free)
         return True
+
+
+@contextlib.contextmanager
+def aside() -> Iterator[None]:
+    """The turn counted in this context waits here for the person - an approval, a question - or for work without
+    them (its delegated tasks): meanwhile it does not hold that work back, or it would wait for itself (portion 6).
+    Nested, or with no local turn here - nothing."""
+    held = HELD.get()
+    if held is None:
+        yield
+        return
+    card, who = held
+    HELD.set(None)  # one inside it lets nothing go again; what it starts holds nothing of this turn's
+    card._count(who, 1, card._aside)
+    try:
+        yield
+    finally:
+        card._count(who, -1, card._aside)
+        HELD.set(held)
 
 
 async def _either(cancel: asyncio.Event, event: asyncio.Event) -> None:

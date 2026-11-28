@@ -18,6 +18,7 @@ from hub.store import MessageRow
 from tests.test_agents import ByTask, ended, plug, profile, run_of
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
+from tests.test_chat import WS_HOST
 from tests.test_claude_code import FAKE
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -935,3 +936,43 @@ def test_work_without_the_person_takes_the_card_one_at_a_time_and_the_person_goe
     done = settled(hub, conv, "achieved")
     assert done["checks"][-1]["verdict"] == "ACHIEVED" and ended(hub, queued)["status"] == "done"
     assert referee.at[0] >= short.ends[0]  # the judge came after the run that had waited before it
+
+
+def test_work_without_the_person_waits_between_its_requests_while_their_local_chat_answers(hub, repo):  # noqa: F811
+    """«Стабилизация», portion 6 (found at 61.8): work without the person did not yield to their chat in the middle
+    of its turn - between its requests and theirs llama-swap swapped the two models to and fro. Now, before each of
+    its requests, it waits while a local turn of the person goes on, and says so; a turn of theirs that waits for
+    them - an approval card - holds nothing back, or nobody there the work would stand still."""
+    talk = use(hub, Gated("talk", ["Привет."]))
+    worker = plug(hub, Ending("work", "local", {}, pause=0.2))
+    agent = profile(hub, name="Без человека", model_id="work/echo")
+    chat_id = hub.post("/v1/conversations", json={}).json()["id"]
+    talk.gate.clear()
+    with hub.websocket_connect("/v1/events", headers={**dict(hub.headers), **WS_HOST}) as ws:
+        ws.receive_json()
+        assert hub.post(f"/v1/conversations/{chat_id}/messages",
+                        json={"content": "привет", "model_id": "talk/m"}).status_code == 202  # fmt: skip
+        wait(lambda: talk.waiting.is_set())  # the person's local turn is on the card
+        run_id = hub.post(f"/v1/agents/{agent['id']}/runs", json={"task": "Работа"}).json()["id"]
+        said = ""
+        for _ in range(300):  # until the run says it waits - or, on the old code, ends
+            event = ws.receive_json()
+            if event["type"] in ("chat.loading", "chat.done") and event["payload"]["conversation_id"] == run_id:
+                said = event["payload"].get("text", "")
+                break
+        assert said == "видеокарта отвечает в вашем чате — продолжу после его ответа"
+    time.sleep(1.0)
+    assert worker.calls == []  # the old code: its request went at once, beside the person's
+    talk.gate.set()
+    wait(lambda: idle(hub, chat_id))
+    assert ended(hub, run_id)["status"] == "done" and len(worker.calls) == 1
+
+    asking = use(hub, Scripted("asker", [WRITE, "Записал."]))  # a local turn of the person that waits for them
+    _pid, conv = chat_with_project(hub, repo, asking, mode="ask")
+    assert hub.post(f"/v1/conversations/{conv}/messages",
+                    json={"content": "создай файл", "model_id": "asker/m"}).status_code == 202  # fmt: skip
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    other = hub.post(f"/v1/agents/{agent['id']}/runs", json={"task": "Ещё работа"}).json()["id"]
+    assert ended(hub, other)["status"] == "done" and len(worker.calls) == 2  # it went while the card waited
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    wait(lambda: idle(hub, conv))

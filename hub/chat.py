@@ -104,7 +104,7 @@ from .delegate import TASK_DIFF, models_text, task_models
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
 from .gateway.base import INVALID_JSON, cost_usd, tool_result_block, until_cancelled
-from .gpu_card import AGENT, CHAT, GpuCard, named
+from .gpu_card import AGENT, ASKER, CHAT, PERSON_WORDS, GpuCard, aside, named, rank
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
 from .symbols import SymbolIndex
@@ -506,7 +506,7 @@ class ChatService:
         began = time.monotonic()
         local = model.get("locality") != "cloud"
         try:
-            with named(asker), self.card.asking(asker) if local else contextlib.nullcontext():
+            with named(asker), self.card.turn(asker, local):
                 await self._steps(conversation_id, model, effort, cancel, client_id, limits or Limits(), outcome)
             if outcome.status == "running":
                 outcome.status = "done"
@@ -643,6 +643,16 @@ class ChatService:
                     return
                 for notice in self.autonomy.take_notices(conversation_id):
                     await self._hub_note(conversation_id, notice)
+            if not cloud and rank(ASKER.get()) > 1 and self.card.person_busy():  # work without the person waits
+                # while their local turn goes on (portion 6): llama-swap would swap the two models at each request
+                await self._bus.publish("chat.loading", {"conversation_id": conversation_id, "text": tr(PERSON_WORDS),
+                                                         "memory": ""}, persist=False)  # fmt: skip
+                await self.card.after_person(cancel)
+                if cancel.is_set():
+                    await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion,
+                                                                  cancelled=True))  # fmt: skip
+                    outcome.status = "cancelled"
+                    return
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
             # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
@@ -1063,7 +1073,8 @@ class ChatService:
                     args = call["input"] if isinstance(call["input"], dict) else {}
                     give = {"delegate_task": self.agents.delegate, "delegate_tasks": self.agents.delegate_many,
                             TASK_DIFF["name"]: self.agents.task_diff}[call["name"]]  # fmt: skip
-                    output, error = await give(conversation_id, args, cancel)
+                    with aside():  # its tasks' turns do not wait for this one (portion 6)
+                        output, error = await give(conversation_id, args, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error) | picture)

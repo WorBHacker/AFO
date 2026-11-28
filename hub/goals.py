@@ -1557,6 +1557,8 @@ class Goals:
                                                  "model_id": judge_id}, persist=False)  # fmt: skip
         try:
             async with self._chat.card.unattended(local):  # a local judge after the work before it (61.8)
+                if local:  # and after the person's own local turn going on now (portion 6)
+                    await self._chat.card.after_person(asyncio.Event())
                 said = await self._judge.ask(judge_id, judge.goal_prompt(goal, results, evidence, words),
                                              conversation_id=conversation_id, meta={"goal_id": goal["id"]})  # fmt: skip
         except judge.JudgeError as exc:
