@@ -129,6 +129,41 @@ def test_a_chat_past_its_window_still_asks_the_model(hub):  # noqa: F811
     assert opened["fill"]["shortened"] is True  # and so does the chat opened again
 
 
+def test_a_chat_whose_model_wrote_many_big_files_still_fits(hub):  # noqa: F811
+    """«Стабилизация», portion 6 (found at step 1 of portion 5, the stand): the request lost old tool results and
+    long texts, never the arguments of old calls - a chat whose model wrote many big files (the results short:
+    «записано») went past its window with them. Now the old calls' long arguments are a note too, the provider's own
+    blocks gone with them; the last messages and the stored conversation stay whole."""
+    provider = register_fake(hub, models=[Model("fake/echo", "fake", "echo", "Echo", "local", {"context": 16000}, {})])
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={"title": "t"}).json()["id"]
+    body = "def f():\n    return 'строка кода'\n" * 150  # ~5 KB each
+
+    def grow(conn):
+        for n in range(12):
+            store.add_message(conn, conv, "assistant", [{"type": "tool_call", "id": f"w{n}", "name": "write_file",
+                                                         "input": {"path": f"m{n}.py", "content": body}}],
+                              model_id="fake/echo", provider_raw={"blocks": [body]})  # fmt: skip
+            store.add_message(conn, conv, "tool", [{"type": "tool_result", "id": f"w{n}", "name": "write_file",
+                                                    "output": f"Записано: m{n}.py"}])  # fmt: skip
+
+    hub.app.state.db.call(grow)
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        hub.post(f"/v1/conversations/{conv}/messages", headers=auth(hub),
+                 json={"content": "дальше", "model_id": "fake/echo"})  # fmt: skip
+        drain_until(ws, "chat.done")
+    sent = provider.last_prompt
+    assert sum(fit.tokens(m) for m in sent) <= fit.room(16000)  # the old code: 44 480 over 13 952
+    calls = [m for m in sent if m.get("tool_calls")]
+    first = calls[0]["tool_calls"][0]["input"]
+    assert first["path"] == "m0.py" and first["content"].startswith("[") and "лежит на диске" in first["content"]
+    assert "provider_raw" not in calls[0] and calls[-1]["tool_calls"][0]["input"]["content"] == body  # the last whole
+    assert [m["role"] for m in sent].count("tool") == 12  # each call still with its result
+    opened = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()
+    assert all(b["input"]["content"] == body for m in opened["messages"] for b in m["content"]
+               if b.get("type") == "tool_call")  # fmt: skip
+
+
 class ToolThenAnswer:
     """A model that runs a tool and then answers: each request with its own count, as llama-swap reports it."""
 

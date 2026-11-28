@@ -6,7 +6,8 @@ leaves no room to answer"). Before each request the prompt is measured (roughly:
 English and code alike) against the window less room for the answer and the tool definitions; when it is over:
 
 1. the oldest tool results give way first - each becomes a one-line note of what it was (the call and its answer
-   stay paired, as providers require);
+   stay paired, as providers require) -, and the long arguments of the oldest calls with them, the text a write_file
+   wrote, an edit's strings (portion 6 of «Стабилизация»: the file is on the disk);
 2. then long old texts keep only their beginning and end;
 3. the last messages stay whole while that is enough - the model works from them; a small window takes their tool
    results too, all but the very last;
@@ -40,6 +41,8 @@ TOOL_MIN = 400  # a tool result shorter than this is not worth cutting
 TEXT_MAX = 2000  # an old text longer than this keeps its beginning and end
 STUB = ("[{name}: прежний результат ({chars} знаков) убран, чтобы разговор поместился в контекст модели; "
         "вызовите снова, если он нужен]")  # fmt: skip  # i18n: keep
+CALL_STUB = ("[{chars} знаков этого вызова убрано, чтобы разговор поместился в контекст модели; вызов выполнен - что "
+             "он записал, лежит на диске, прочитайте файл, если нужно]")  # fmt: skip  # i18n: keep
 LOOKS = frozenset({"screen_look"})  # stale once the agent looked again
 LOOKS_KEPT = 2
 LOOKS_BATCH = 3
@@ -96,6 +99,23 @@ def stale_looks(out: list[dict[str, Any]]) -> int:
     return gone
 
 
+def call_stubs(calls: Any) -> list[dict[str, Any]] | None:
+    """Calls with their long text arguments - the text a write_file wrote, an edit's strings - as a note
+    («Стабилизация», portion 6: a chat whose model wrote many big files outgrew its window with them, the results
+    short); None - none is long. The calls themselves - their ids and names - stay, paired with their results."""
+    if not isinstance(calls, list):
+        return None
+    out, changed = [], False
+    for call in calls:
+        args = call.get("input") if isinstance(call, dict) else None
+        if isinstance(args, dict) and any(isinstance(v, str) and len(v) > TOOL_MIN for v in args.values()):
+            call = {**call, "input": {k: CALL_STUB.format(chars=len(v)) if isinstance(v, str) and len(v) > TOOL_MIN
+                                      else v for k, v in args.items()}}  # fmt: skip
+            changed = True
+        out.append(call)
+    return out if changed else None
+
+
 def room(window: int) -> int:
     """What a request may take of a window: the rest is the answer's."""
     return window - max(2048, window // 8)
@@ -130,8 +150,18 @@ def fit(prompt: list[dict[str, Any]], *, window: int | None, tools: list[dict] |
     if total <= budget:
         return (out, shortened) if shortened else (prompt, 0)
     end = max(len(out) - KEEP_TAIL, 0)
-    for i in range(end):  # 1. the oldest tool results
+    for i in range(end):  # 1. the oldest tool results - and the long arguments of the oldest calls
         entry = out[i]
+        if entry["role"] == "assistant" and (calls := call_stubs(entry.get("tool_calls"))) is not None:
+            before = cost(entry)
+            entry["tool_calls"] = calls
+            entry.pop("provider_raw", None)  # the provider's own blocks would bring the arguments back
+            entry.pop("provider", None)
+            total -= before - cost(entry)
+            shortened += 1
+            if total <= budget:
+                return out, shortened
+            continue
         text = entry.get("content") or ""
         if entry["role"] != "tool" or not isinstance(text, str) or len(text) <= TOOL_MIN:
             continue
