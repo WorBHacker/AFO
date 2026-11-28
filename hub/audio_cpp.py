@@ -346,12 +346,13 @@ def amiss(path: Path, *, text: str, voice: str) -> float:
     return abs(now / usual - 1) if usual else 0.0
 
 
-def music_args(models: Path, backend: str, *, words: str, seconds: float) -> list[str]:
-    """Music without words by its description - a WAV of 48 kHz, stereo."""
+def music_args(models: Path, backend: str, *, words: str, seconds: float, take: int = 0) -> list[str]:
+    """Music without words by its description - a WAV of 48 kHz, stereo. `take` (portion 5: the Studio's «Аудио») -
+    which making of it this is: another seed, another piece."""
     length = min(MUSIC_S[1], max(MUSIC_S[0], seconds))
     return ["--task", "gen", *_model(models, "music", backend), "--task-route", "text2music", "--text",
             f"{words.rstrip('. ')}, instrumental, no vocals", "--lyrics", "[instrumental]", "--duration-seconds",
-            f"{length:.1f}", "--seed", str(SEED)]  # fmt: skip
+            f"{length:.1f}", "--seed", str(SEED + take)]  # fmt: skip
 
 
 def effect_args(models: Path, backend: str, *, words: str, seconds: float, take: int = 0) -> list[str]:

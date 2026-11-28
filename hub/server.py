@@ -116,6 +116,7 @@ from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .setup import Setup
 from .sound import Sound
+from .sound_pieces import Pieces
 from .system_status import StatusMonitor
 from .telegram import TelegramBot
 from .terminals import TerminalManager
@@ -271,6 +272,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.sound = Sound(bus, card=app.state.card, llama_swap_url=settings.llama_swap_url,
                                 tools=app.state.visual.tools, models=models_home(),
                                 build=app.state.setup.recommended_build)  # fmt: skip
+        app.state.pieces = Pieces(db, bus, app.state.sound, paths.media)  # the Studio's «Аудио» (portion 5)
         # «Улучшить ролик» (54): its programs beside ffmpeg, RelayVSR's weights beside the models
         app.state.enhance = Enhance(bus, tools=app.state.visual.tools, models=models_home(),
                                     machine=lambda: app.state.installer.machine())  # fmt: skip
@@ -325,6 +327,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             log.info("model installs left going by the last hub wait for «Продолжить»")
         if await app.state.visual.start():
             log.info("pictures left going by the last hub failed")
+        if await app.state.pieces.start():
+            log.info("pieces of sound left going by the last hub failed")
         if await app.state.director.start():
             log.info("films left going by the last hub wait for «Продолжить»")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
@@ -374,6 +378,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.installer.stop()
             await app.state.gpu.stop()
             await app.state.director.close()  # a film being shot: before the Studio's queue is closed
+            await app.state.pieces.stop()  # the Studio's piece of sound going on: before the engine's parts
             await app.state.sound.close()  # a part's download: what came stays
             await app.state.enhance.close()
             await app.state.visual.stop()

@@ -45,7 +45,7 @@ STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done"
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 30  # the Studio's gallery (48.7в) - and its queue: the jobs going on are among the latest
 GALLERY = [("all", N_("Всё")), ("image", N_("Картинки")), ("video", N_("Видео"))]  # 48.7в
-MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
+MODES = [("picture", N_("Картинка")), ("video", N_("Видео")), ("audio", N_("Аудио"))]  # 29.8б; (portion 5) «Аудио»
 NO_KIND = {"picture": N_("Модели для картинок ещё нет — щелчок откроет «Установки»"),
            "video": N_("Модели для видео ещё нет — щелчок откроет «Установки»")}  # fmt: skip
 # a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
@@ -264,7 +264,7 @@ class VisualView(QObject):
 
     def _kinds(self) -> list[str]:
         """What there is to make (48.8): pictures with a picture model, videos with a video model."""
-        return [k for k, _n in MODES if (self._videos if k == "video" else self._models)]
+        return [k for k, _n in MODES if k != "audio" and (self._videos if k == "video" else self._models)]
 
     @Property(list, notify=changed)
     def modes(self) -> list:
@@ -272,13 +272,13 @@ class VisualView(QObject):
         картинка/видео»: with one kind's models alone it was hidden, 48.8); a kind without a model says so, and a
         click on it offers one (`pickMode`)."""
         kinds = self._kinds()
-        return [{"id": k, "name": tr(n), "tip": "" if k in kinds else tr(NO_KIND[k])} for k, n in MODES]
+        return [{"id": k, "name": tr(n), "tip": "" if k in kinds or k == "audio" else tr(NO_KIND[k])} for k, n in MODES]
 
     @Slot(str)
     def pickMode(self, mode: str) -> None:
         """The switch clicked: a kind there is a model for - made so; one without - «Установки» with its models."""
         kinds = self._kinds()
-        if mode in dict(MODES) and kinds and mode not in kinds:
+        if mode in dict(MODES) and mode != "audio" and kinds and mode not in kinds:
             self.app.install_view.offer("video" if mode == "video" else "image")
             return
         self.setMode(mode)
@@ -721,6 +721,8 @@ class VisualView(QObject):
     def _tuned_model(self) -> dict[str, Any] | None:
         """The model whose own settings the Studio shows: the video's, or the one the picture is drawn with - its
         block on the processor is its model's."""
+        if self._mode == "audio":
+            return None
         if self._mode == "video":
             return self._video_model()
         model = self._plan()[0]
@@ -810,7 +812,7 @@ class VisualView(QObject):
             self._models, self._default, self._loaded = data.get("models", []), data.get("default", ""), True
             self._videos = data.get("videos") or []
             kinds = self._kinds()
-            if self._mode not in kinds:  # no video model: pictures; (48.8) no picture model: videos
+            if self._mode not in [*kinds, "audio"]:  # no video model: pictures; (48.8) no picture model: videos
                 self._mode = kinds[0] if kinds else "picture"
             if not self._chosen():  # a model gone (removed): «Авто» again (48.7б)
                 self._model = ""
@@ -862,7 +864,8 @@ class VisualView(QObject):
     @Slot(str)
     def setMode(self, mode: str) -> None:
         kinds = self._kinds()
-        wanted = mode if mode in kinds else (kinds[0] if kinds else "picture")  # 48.8: videos alone - a video
+        # 48.8: videos alone - a video; (portion 5) «Аудио» needs no picture or video model
+        wanted = mode if mode in kinds or mode == "audio" else (kinds[0] if kinds else "picture")
         if wanted != self._mode:  # a picture model is no video model: «Авто» again (48.7б)
             self._model = ""
         self._mode = wanted
@@ -910,6 +913,8 @@ class VisualView(QObject):
         self._start(seed=-1)
 
     def _start(self, *, seed: int | None) -> None:
+        if self._mode == "audio":  # its own button (AudioView.make)
+            return
         if self._mode == "video":
             self._film(seed=seed)
             return

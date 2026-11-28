@@ -16,7 +16,8 @@ Item {
     // a picture to start from, in use: «По картинке», or a video's first frame unless the video is by words (48.7б)
     readonly property bool fromPicture: Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
     property bool tuneOpen: false  // «Настройки модели» unfolded (portion 5)
-    onVisibleChanged: if (visible) Visual.load()
+    readonly property bool audio: Visual.mode === "audio"  // «Аудио» (portion 5): AudioView, the left and the centre
+    onVisibleChanged: if (visible) { Visual.load(); Audio.load() }
 
     // one of the model's own settings: saved when typed out (Enter, or the focus gone); while typed the hub's value
     // does not come over it - the Studio's events change `Visual` often; another model chosen meanwhile - its own
@@ -65,6 +66,23 @@ Item {
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Картинки (*.png *.jpg *.jpeg *.webp *.bmp)")]
         onAccepted: Visual.chooseLast(selectedFile.toString())
+    }
+
+    MenuPopup {  // «Аудио»: the voice that reads (portion 5)
+        id: voiceMenu
+        menuWidth: 300
+        below: true
+        items: Audio.voiceChoices
+        onChosen: (id) => Audio.setVoice(id)
+    }
+
+    FileDialog {
+        id: audioSaveDialog
+        title: qsTr("Сохранить звук")
+        fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("Звук WAV (*.wav)")]
+        defaultSuffix: "wav"
+        onAccepted: Audio.saveAs(selectedFile.toString())
     }
 
     MenuPopup {  // the model (48.7б): «Авто» or one installed
@@ -121,7 +139,7 @@ Item {
     // no model yet: where to get one - for pictures, for video (the fix after 0.1.15: the Studio films too); each
     // button takes the install sheet to its own place, whatever it was left on
     Column {
-        visible: Visual.loaded && !Visual.hasModels
+        visible: Visual.loaded && !Visual.hasModels && !studio.audio
         anchors.centerIn: parent
         width: Math.min(460, parent.width - 48)
         spacing: 12
@@ -142,6 +160,12 @@ Item {
                 text: qsTr("Поставить модель для видео")
                 onClicked: Installer.offer("video")  // «Подборка», the checked video model's card
             }
+            PlainButton {  // (portion 5) sound needs no picture or video model
+                objectName: "visualAudio"
+                iconName: "play"
+                text: qsTr("Аудио: голос, музыка, звуки")
+                onClicked: Visual.setMode("audio")
+            }
         }
         Text {
             objectName: "visualMoreVideo"
@@ -158,7 +182,7 @@ Item {
     // left: what to make
     Rectangle {
         id: settings
-        visible: Visual.hasModels && studio.byHand
+        visible: (Visual.hasModels || studio.audio) && studio.byHand
         y: kindBar.height
         width: studio.narrow ? 280 : 320
         height: parent.height - kindBar.height
@@ -176,6 +200,7 @@ Item {
                 spacing: 12
                 Label { text: qsTr("Что сделать") }
                 Rectangle {
+                    visible: !studio.audio
                     width: parent.width
                     height: 120
                     radius: 6
@@ -209,248 +234,337 @@ Item {
                     value: Visual.mode
                     onPicked: (id) => Visual.pickMode(id)
                 }
-                Chip {  // 48.7б: «Авто» or one of those installed
-                    id: modelChip
-                    objectName: "visualModel"
-                    iconName: "sparkle"
-                    text: qsTr("Модель: %1").arg(Visual.modelName)
-                    onClicked: { modelMenu.anchor = modelChip; modelMenu.open() }
-                }
-                Segmented {  // 48.7б: by words, by a picture, by two frames - as the model films
-                    objectName: "visualVideoMode"
-                    visible: Visual.mode === "video" && Visual.videoModes.length > 1
-                    options: Visual.videoModes
-                    value: Visual.videoMode
-                    onPicked: (id) => Visual.setVideoMode(id)
-                }
-                Segmented {
-                    objectName: "visualShape"
-                    visible: !studio.fromPicture  // from a picture: its shape
-                    options: Visual.shapes
-                    value: Visual.shape
-                    onPicked: (id) => Visual.setShape(id)
-                }
-                Segmented {
-                    objectName: "visualLength"
-                    visible: Visual.mode === "video"
-                    options: Visual.lengths
-                    value: Visual.length
-                    onPicked: (id) => Visual.setLength(id)
-                }
-                OnOff {  // 52.5: a model that films with sound
-                    id: soundSwitch
-                    objectName: "visualSound"
-                    visible: Visual.canSound
-                    text: qsTr("Со звуком")
-                    onToggled: Visual.setSound(checked)
-                    Binding { target: soundSwitch; property: "checked"; value: Visual.sound }  // a click does not cut it
-                }
-                Rectangle {
-                    width: parent.width
-                    height: 34
-                    radius: 6
-                    visible: Visual.canSound && Visual.sound
-                    color: Theme.p.card
-                    border.color: soundWords.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
-                    TextField {
-                        id: soundWords
-                        objectName: "visualSoundWords"
-                        anchors.fill: parent
-                        anchors.margins: 2
-                        text: Visual.soundWords
-                        placeholderText: qsTr("Звук: что слышно? Например: шум дождя, проезжает машина")
-                        placeholderTextColor: Theme.p.faint
-                        color: Theme.p.text
-                        font.family: Theme.uiFont
-                        font.pixelSize: 13
-                        background: null
-                        onTextChanged: if (text !== Visual.soundWords) Visual.setSoundWords(text)
-                    }
-                }
-                Segmented {
-                    objectName: "visualQuality"
-                    visible: Visual.choice
-                    options: Visual.qualities
-                    value: Visual.quality
-                    onPicked: (id) => Visual.setQuality(id)
-                }
-                // «Настройки модели» («Стабилизация», portion 5; the user's complaint 13): the model's own steps,
-                // «сила подсказки», negative and seed - an empty field: as it was installed; «Как было» - all of them
-                PlainButton {
-                    objectName: "visualTuneToggle"
-                    visible: Visual.tuning.model !== undefined
-                    iconName: studio.tuneOpen ? "chevron-down" : "chevron-right"
-                    text: Visual.tuning.own ? qsTr("Настройки модели: свои") : qsTr("Настройки модели")
-                    onClicked: studio.tuneOpen = !studio.tuneOpen
-                }
+                // «Аудио» («Стабилизация», portion 5): a voice by a text, music, a sound - each a file of its own
                 Column {
-                    id: tune
-                    objectName: "visualTune"
+                    objectName: "audioSide"
+                    visible: studio.audio
                     width: parent.width
-                    spacing: 6
-                    visible: studio.tuneOpen && Visual.tuning.model !== undefined
-                    Note { text: qsTr("Для модели %1. Пустое поле — как при установке.").arg(Visual.tuning.name || "") }
-                    Row {
+                    spacing: 12
+                    Segmented {
+                        objectName: "audioKind"
+                        options: Audio.kinds
+                        value: Audio.kind
+                        onPicked: (id) => Audio.setKind(id)
+                    }
+                    Rectangle {
                         width: parent.width
-                        spacing: 8
-                        Column {
-                            width: (parent.width - 8) / 2
-                            spacing: 4
-                            Label { text: qsTr("Шаги") }
-                            TuneField {
-                                objectName: "visualSteps"
-                                key: "steps"
-                                placeholderText: Visual.tuning.stepsHint || ""
-                                inputMethodHints: Qt.ImhDigitsOnly
-                            }
-                        }
-                        Column {
-                            width: (parent.width - 8) / 2
-                            spacing: 4
-                            Label { text: qsTr("Сила подсказки") }
-                            TuneField {
-                                objectName: "visualCfg"
-                                key: "cfg"
-                                placeholderText: Visual.tuning.cfgHint || ""
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                        height: 120
+                        radius: 6
+                        color: Theme.p.card
+                        border.color: audioWords.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
+                        ScrollView {
+                            anchors.fill: parent
+                            anchors.margins: 2
+                            TextArea {
+                                id: audioWords
+                                objectName: "audioWords"
+                                text: Audio.words
+                                wrapMode: TextEdit.Wrap
+                                placeholderText: Audio.hint
+                                placeholderTextColor: Theme.p.faint
+                                color: Theme.p.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                                background: null
+                                onTextChanged: if (text !== Audio.words) Audio.setWords(text)
                             }
                         }
                     }
-                    Label { text: qsTr("Чего не должно быть") }
-                    TuneField {
-                        objectName: "visualNegative"
-                        key: "negative"
-                        placeholderText: qsTr("Например: размыто, лишние пальцы, надписи")
+                    Chip {
+                        id: voiceChip
+                        objectName: "audioVoice"
+                        visible: Audio.kind === "voice" && Audio.voiceName !== ""
+                        iconName: "chat"
+                        text: qsTr("Голос: %1").arg(Audio.voiceName)
+                        onClicked: { voiceMenu.anchor = voiceChip; voiceMenu.open() }
                     }
-                    Label { text: qsTr("Зерно") }
-                    TuneField {
-                        objectName: "visualSeed"
-                        key: "seed"
-                        placeholderText: qsTr("Пусто — каждый раз новое")
-                        inputMethodHints: Qt.ImhDigitsOnly
+                    Segmented {
+                        objectName: "audioLength"
+                        visible: Audio.kind !== "voice"
+                        options: Audio.lengths
+                        value: Audio.length
+                        onPicked: (id) => Audio.setLength(id)
+                    }
+                    // the part this kind needs - fetched here as in «Звук фильма…»
+                    Note {
+                        objectName: "audioPartNote"
+                        visible: Audio.part.state !== undefined && Audio.part.state !== "ready"
+                        text: Audio.part.state === "loading"
+                              ? qsTr("Скачивается «%1»: %2 %").arg(Audio.part.name).arg(Audio.part.percent)
+                              : qsTr("Для этого нужна часть «%1» — %2 ГБ, один раз.").arg(Audio.part.name)
+                                    .arg(Audio.part.size) + (Audio.part.error ? " " + Audio.part.error : "")
                     }
                     PlainButton {
-                        objectName: "visualTuneReset"
-                        visible: Visual.tuning.own === true
-                        iconName: "refresh"
-                        text: qsTr("Как было")
-                        onClicked: Visual.resetTuning()
+                        objectName: "audioGetPart"
+                        visible: Audio.part.state === "missing"
+                        iconName: "download"
+                        text: qsTr("Скачать")
+                        onClicked: Audio.getPart()
+                    }
+                    PlainButton {
+                        objectName: "audioStopPart"
+                        visible: Audio.part.state === "loading"
+                        iconName: "stop"
+                        text: qsTr("Стоп")
+                        onClicked: Audio.stopPart()
+                    }
+                    PlainButton {
+                        objectName: "audioMake"
+                        width: parent.width
+                        kind: "primary"
+                        iconName: "play"
+                        enabled: Audio.canMake
+                        text: Audio.makeText
+                        onClicked: Audio.make()
                     }
                 }
-                PlainButton {
-                    objectName: "visualFromFile"
-                    visible: !Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
-                    iconName: "image"
-                    text: Visual.mode === "video" ? qsTr("Первый кадр…") : qsTr("По картинке…")
-                    onClicked: sourceDialog.open()
-                }
-                // «По картинке» (29.6б): the source and how much to change it
-                Row {
-                    objectName: "visualSource"
-                    visible: studio.fromPicture
-                    spacing: 10
+                Column {  // pictures and videos, by hand
+                    visible: !studio.audio
+                    width: parent.width
+                    spacing: 12
+                    Chip {  // 48.7б: «Авто» or one of those installed
+                        id: modelChip
+                        objectName: "visualModel"
+                        iconName: "sparkle"
+                        text: qsTr("Модель: %1").arg(Visual.modelName)
+                        onClicked: { modelMenu.anchor = modelChip; modelMenu.open() }
+                    }
+                    Segmented {  // 48.7б: by words, by a picture, by two frames - as the model films
+                        objectName: "visualVideoMode"
+                        visible: Visual.mode === "video" && Visual.videoModes.length > 1
+                        options: Visual.videoModes
+                        value: Visual.videoMode
+                        onPicked: (id) => Visual.setVideoMode(id)
+                    }
+                    Segmented {
+                        objectName: "visualShape"
+                        visible: !studio.fromPicture  // from a picture: its shape
+                        options: Visual.shapes
+                        value: Visual.shape
+                        onPicked: (id) => Visual.setShape(id)
+                    }
+                    Segmented {
+                        objectName: "visualLength"
+                        visible: Visual.mode === "video"
+                        options: Visual.lengths
+                        value: Visual.length
+                        onPicked: (id) => Visual.setLength(id)
+                    }
+                    OnOff {  // 52.5: a model that films with sound
+                        id: soundSwitch
+                        objectName: "visualSound"
+                        visible: Visual.canSound
+                        text: qsTr("Со звуком")
+                        onToggled: Visual.setSound(checked)
+                        Binding { target: soundSwitch; property: "checked"; value: Visual.sound }  // a click does not cut it
+                    }
                     Rectangle {
-                        width: 64
-                        height: 64
+                        width: parent.width
+                        height: 34
                         radius: 6
+                        visible: Visual.canSound && Visual.sound
                         color: Theme.p.card
-                        border.color: Theme.p.hairline
-                        Image {
+                        border.color: soundWords.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
+                        TextField {
+                            id: soundWords
+                            objectName: "visualSoundWords"
                             anchors.fill: parent
-                            anchors.margins: 3
-                            source: Visual.sourceSource
-                            sourceSize.width: 128
-                            sourceSize.height: 128
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
+                            anchors.margins: 2
+                            text: Visual.soundWords
+                            placeholderText: qsTr("Звук: что слышно? Например: шум дождя, проезжает машина")
+                            placeholderTextColor: Theme.p.faint
+                            color: Theme.p.text
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                            background: null
+                            onTextChanged: if (text !== Visual.soundWords) Visual.setSoundWords(text)
                         }
+                    }
+                    Segmented {
+                        objectName: "visualQuality"
+                        visible: Visual.choice
+                        options: Visual.qualities
+                        value: Visual.quality
+                        onPicked: (id) => Visual.setQuality(id)
+                    }
+                    // «Настройки модели» («Стабилизация», portion 5; the user's complaint 13): the model's own steps,
+                    // «сила подсказки», negative and seed - an empty field: as it was installed; «Как было» - all of them
+                    PlainButton {
+                        objectName: "visualTuneToggle"
+                        visible: Visual.tuning.model !== undefined
+                        iconName: studio.tuneOpen ? "chevron-down" : "chevron-right"
+                        text: Visual.tuning.own ? qsTr("Настройки модели: свои") : qsTr("Настройки модели")
+                        onClicked: studio.tuneOpen = !studio.tuneOpen
                     }
                     Column {
+                        id: tune
+                        objectName: "visualTune"
+                        width: parent.width
                         spacing: 6
-                        anchors.verticalCenter: parent.verticalCenter
-                        Text {
-                            text: Visual.mode === "video" ? qsTr("Первый кадр") : qsTr("По картинке — насколько менять:")
-                            color: Theme.p.text_soft
-                            font.family: Theme.uiFont
-                            font.pixelSize: 12
+                        visible: studio.tuneOpen && Visual.tuning.model !== undefined
+                        Note { text: qsTr("Для модели %1. Пустое поле — как при установке.").arg(Visual.tuning.name || "") }
+                        Row {
+                            width: parent.width
+                            spacing: 8
+                            Column {
+                                width: (parent.width - 8) / 2
+                                spacing: 4
+                                Label { text: qsTr("Шаги") }
+                                TuneField {
+                                    objectName: "visualSteps"
+                                    key: "steps"
+                                    placeholderText: Visual.tuning.stepsHint || ""
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                }
+                            }
+                            Column {
+                                width: (parent.width - 8) / 2
+                                spacing: 4
+                                Label { text: qsTr("Сила подсказки") }
+                                TuneField {
+                                    objectName: "visualCfg"
+                                    key: "cfg"
+                                    placeholderText: Visual.tuning.cfgHint || ""
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                }
+                            }
                         }
-                        Segmented {
-                            objectName: "visualStrength"
-                            visible: Visual.mode !== "video"  // a video's first frame is kept as it is
-                            options: Visual.strengths
-                            value: Visual.strength
-                            onPicked: (id) => Visual.setStrength(id)
+                        Label { text: qsTr("Чего не должно быть") }
+                        TuneField {
+                            objectName: "visualNegative"
+                            key: "negative"
+                            placeholderText: qsTr("Например: размыто, лишние пальцы, надписи")
+                        }
+                        Label { text: qsTr("Зерно") }
+                        TuneField {
+                            objectName: "visualSeed"
+                            key: "seed"
+                            placeholderText: qsTr("Пусто — каждый раз новое")
+                            inputMethodHints: Qt.ImhDigitsOnly
                         }
                         PlainButton {
-                            iconName: "close"
-                            text: Visual.mode === "video" ? qsTr("Без кадра") : qsTr("Без образца")
-                            onClicked: Visual.clearSource()
+                            objectName: "visualTuneReset"
+                            visible: Visual.tuning.own === true
+                            iconName: "refresh"
+                            text: qsTr("Как было")
+                            onClicked: Visual.resetTuning()
                         }
                     }
-                }
-                // 48.7б: a video between two frames - its last one
-                PlainButton {
-                    objectName: "visualLastFromFile"
-                    visible: Visual.mode === "video" && Visual.videoMode === "frames" && !Visual.hasLast
-                    iconName: "image"
-                    text: qsTr("Последний кадр…")
-                    onClicked: lastDialog.open()
-                }
-                Row {
-                    objectName: "visualLast"
-                    visible: Visual.mode === "video" && Visual.videoMode === "frames" && Visual.hasLast
-                    spacing: 10
-                    Rectangle {
-                        width: 64
-                        height: 64
-                        radius: 6
-                        color: Theme.p.card
-                        border.color: Theme.p.hairline
-                        Image {
-                            anchors.fill: parent
-                            anchors.margins: 3
-                            source: Visual.lastSource
-                            sourceSize.width: 128
-                            sourceSize.height: 128
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
+                    PlainButton {
+                        objectName: "visualFromFile"
+                        visible: !Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
+                        iconName: "image"
+                        text: Visual.mode === "video" ? qsTr("Первый кадр…") : qsTr("По картинке…")
+                        onClicked: sourceDialog.open()
+                    }
+                    // «По картинке» (29.6б): the source and how much to change it
+                    Row {
+                        objectName: "visualSource"
+                        visible: studio.fromPicture
+                        spacing: 10
+                        Rectangle {
+                            width: 64
+                            height: 64
+                            radius: 6
+                            color: Theme.p.card
+                            border.color: Theme.p.hairline
+                            Image {
+                                anchors.fill: parent
+                                anchors.margins: 3
+                                source: Visual.sourceSource
+                                sourceSize.width: 128
+                                sourceSize.height: 128
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                            }
+                        }
+                        Column {
+                            spacing: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                                text: Visual.mode === "video" ? qsTr("Первый кадр") : qsTr("По картинке — насколько менять:")
+                                color: Theme.p.text_soft
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                            }
+                            Segmented {
+                                objectName: "visualStrength"
+                                visible: Visual.mode !== "video"  // a video's first frame is kept as it is
+                                options: Visual.strengths
+                                value: Visual.strength
+                                onPicked: (id) => Visual.setStrength(id)
+                            }
+                            PlainButton {
+                                iconName: "close"
+                                text: Visual.mode === "video" ? qsTr("Без кадра") : qsTr("Без образца")
+                                onClicked: Visual.clearSource()
+                            }
                         }
                     }
-                    Column {
-                        spacing: 6
-                        anchors.verticalCenter: parent.verticalCenter
-                        Text {
-                            text: qsTr("Последний кадр")
-                            color: Theme.p.text_soft
-                            font.family: Theme.uiFont
-                            font.pixelSize: 12
+                    // 48.7б: a video between two frames - its last one
+                    PlainButton {
+                        objectName: "visualLastFromFile"
+                        visible: Visual.mode === "video" && Visual.videoMode === "frames" && !Visual.hasLast
+                        iconName: "image"
+                        text: qsTr("Последний кадр…")
+                        onClicked: lastDialog.open()
+                    }
+                    Row {
+                        objectName: "visualLast"
+                        visible: Visual.mode === "video" && Visual.videoMode === "frames" && Visual.hasLast
+                        spacing: 10
+                        Rectangle {
+                            width: 64
+                            height: 64
+                            radius: 6
+                            color: Theme.p.card
+                            border.color: Theme.p.hairline
+                            Image {
+                                anchors.fill: parent
+                                anchors.margins: 3
+                                source: Visual.lastSource
+                                sourceSize.width: 128
+                                sourceSize.height: 128
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                            }
                         }
-                        PlainButton {
-                            iconName: "close"
-                            text: qsTr("Без последнего")
-                            onClicked: Visual.clearLast()
+                        Column {
+                            spacing: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                                text: qsTr("Последний кадр")
+                                color: Theme.p.text_soft
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                            }
+                            PlainButton {
+                                iconName: "close"
+                                text: qsTr("Без последнего")
+                                onClicked: Visual.clearLast()
+                            }
                         }
                     }
+                    PlainButton {
+                        objectName: "visualDraw"
+                        width: parent.width
+                        kind: Visual.busy ? "danger" : "primary"
+                        iconName: Visual.busy ? "stop" : "image"
+                        enabled: Visual.busy || promptArea.text.trim() !== ""
+                        text: Visual.busy ? qsTr("Стоп") : (Visual.mode === "video" ? qsTr("Снять видео") : qsTr("Нарисовать"))
+                        onClicked: Visual.busy ? Visual.stop() : Visual.draw()
+                    }
+                    PlainButton {  // 48.7в: one drawn - the next into the hub's queue, the canvas kept
+                        objectName: "visualEnqueue"
+                        visible: Visual.busy
+                        width: parent.width
+                        iconName: "plus"
+                        enabled: promptArea.text.trim() !== ""
+                        text: qsTr("В очередь")
+                        onClicked: Visual.draw()
+                    }
+                    Note { text: Visual.modelText; color: Theme.p.faint; visible: text !== "" }
                 }
-                PlainButton {
-                    objectName: "visualDraw"
-                    width: parent.width
-                    kind: Visual.busy ? "danger" : "primary"
-                    iconName: Visual.busy ? "stop" : "image"
-                    enabled: Visual.busy || promptArea.text.trim() !== ""
-                    text: Visual.busy ? qsTr("Стоп") : (Visual.mode === "video" ? qsTr("Снять видео") : qsTr("Нарисовать"))
-                    onClicked: Visual.busy ? Visual.stop() : Visual.draw()
-                }
-                PlainButton {  // 48.7в: one drawn - the next into the hub's queue, the canvas kept
-                    objectName: "visualEnqueue"
-                    visible: Visual.busy
-                    width: parent.width
-                    iconName: "plus"
-                    enabled: promptArea.text.trim() !== ""
-                    text: qsTr("В очередь")
-                    onClicked: Visual.draw()
-                }
-                Note { text: Visual.modelText; color: Theme.p.faint; visible: text !== "" }
             }
         }
     }
@@ -458,7 +572,7 @@ Item {
     // the centre: the picture or the video, and what to do with it; below - the latest
     Item {
         id: stage
-        visible: Visual.hasModels && studio.byHand
+        visible: Visual.hasModels && studio.byHand && !studio.audio
         x: settings.width
         y: kindBar.height
         width: parent.width - settings.width
@@ -757,6 +871,127 @@ Item {
                     ToolTip.visible: thumbMouse.containsMouse
                     ToolTip.delay: 600
                     ToolTip.text: thumb.modelData.prompt
+                }
+            }
+        }
+    }
+
+    // «Аудио» (portion 5): the piece in the player and «Сохранить как…»; below - the latest pieces
+    Item {
+        id: audioStage
+        objectName: "audioStage"
+        visible: studio.audio && studio.byHand
+        x: settings.width
+        y: kindBar.height
+        width: parent.width - settings.width
+        height: parent.height - kindBar.height
+        Column {
+            id: audioTop
+            x: 20
+            y: 14
+            width: parent.width - 40
+            spacing: 12
+            Text {
+                objectName: "audioPlaying"
+                width: parent.width
+                wrapMode: Text.Wrap
+                maximumLineCount: 3
+                elide: Text.ElideRight
+                text: Audio.playingWords !== "" ? Audio.playingWords
+                      : Audio.pieces.length > 0 ? qsTr("Нажмите ▶ у звука в списке, чтобы послушать.")
+                      : qsTr("Здесь будут голос, музыка и звуки, которые вы сделаете, — каждый отдельным файлом.")
+                color: Audio.playingWords !== "" ? Theme.p.text : Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 14
+            }
+            Row {
+                width: parent.width
+                spacing: 10
+                visible: Audio.playing !== ""
+                AudioPlayer {
+                    objectName: "audioPlayer"
+                    width: parent.width - audioSave.width - 10
+                    source: Audio.playing
+                }
+                PlainButton {
+                    id: audioSave
+                    objectName: "audioSave"
+                    iconName: "download"
+                    text: qsTr("Сохранить как…")
+                    onClicked: audioSaveDialog.open()
+                }
+            }
+            Label { text: qsTr("Сделанные звуки"); visible: Audio.pieces.length > 0 }
+        }
+        ListView {
+            objectName: "audioList"
+            x: 20
+            y: audioTop.y + audioTop.height + 8
+            width: parent.width - 40
+            height: parent.height - y - 12
+            clip: true
+            spacing: 4
+            boundsBehavior: Flickable.StopAtBounds
+            model: Audio.pieces
+            delegate: Rectangle {
+                id: piece
+                required property var modelData
+                objectName: "audioPiece_" + piece.modelData.id
+                width: ListView.view.width
+                height: 50
+                radius: 6
+                color: piece.modelData.chosen ? Theme.p.selection : pieceHover.hovered ? Theme.p.item_hover : "transparent"
+                HoverHandler { id: pieceHover }
+                Column {
+                    x: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - 24 - pieceButtons.width
+                    spacing: 2
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: piece.modelData.words
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                    }
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: [piece.modelData.kind, piece.modelData.voice, piece.modelData.note]
+                              .filter((part) => part !== "").join(" · ")
+                        color: piece.modelData.status === "failed" ? Theme.p.error : Theme.p.muted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                }
+                Row {
+                    id: pieceButtons
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    IconButton {
+                        objectName: "audioPlay_" + piece.modelData.id
+                        visible: piece.modelData.done
+                        iconName: "play"
+                        tip: qsTr("Слушать")
+                        onClicked: Audio.pick(piece.modelData.id)
+                    }
+                    IconButton {
+                        objectName: "audioCancel_" + piece.modelData.id
+                        visible: piece.modelData.going
+                        iconName: "close"
+                        tip: qsTr("Остановить")
+                        onClicked: Audio.cancel(piece.modelData.id)
+                    }
+                    IconButton {
+                        objectName: "audioDelete_" + piece.modelData.id
+                        visible: !piece.modelData.going
+                        iconName: "trash"
+                        tip: qsTr("Удалить")
+                        onClicked: Audio.remove(piece.modelData.id)
+                    }
                 }
             }
         }

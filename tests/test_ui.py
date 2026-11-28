@@ -398,6 +398,7 @@ class FakeClient:
         self.film_calls = []  # «Режиссёр» (50.9)
         self.films_list = []
         self.sound_calls = []  # a film's added sound (53.6): the engine's parts
+        self.piece_list = []  # the Studio's «Аудио» (portion 5): its pieces, the newest first
         self.sound_state = {
             "engine": {"tag": "v0.9.5", "build": "cuda-13", "ready": False},
             "parts": [{"id": part, "name": name, "about": about, "size": size, "licence": "Apache-2.0",
@@ -857,6 +858,28 @@ class FakeClient:
 
     def remove_sound(self, part):
         return self._sound_part("remove", part, state="missing", got=0)
+
+    def sound_pieces(self, limit=50):
+        return {"pieces": copy.deepcopy(self.piece_list[:limit])}
+
+    def make_sound(self, spec):
+        self.sound_calls.append(("piece", spec))
+        made = {"id": f"s{len(self.sound_calls)}", "kind": spec["kind"], "words": spec["words"],
+                "voice": spec.get("voice", ""), "seconds": spec.get("seconds"), "status": "queued", "error": "",
+                "file": ""}  # fmt: skip
+        self.piece_list.insert(0, made)
+        return {"piece": copy.deepcopy(made)}
+
+    def cancel_sound(self, piece_id):
+        self.sound_calls.append(("cancel", piece_id))
+        found = next(p for p in self.piece_list if p["id"] == piece_id)
+        found["status"] = "cancelled"
+        return {"piece": copy.deepcopy(found)}
+
+    def remove_sound_piece(self, piece_id):
+        self.sound_calls.append(("remove", piece_id))
+        self.piece_list = [p for p in self.piece_list if p["id"] != piece_id]
+        return {"removed": piece_id}
 
     def delete_film(self, film_id):
         self.film_calls.append(("delete", film_id))
@@ -7730,7 +7753,7 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
                                  "steps": 4, "cfg": 1.0}]  # fmt: skip
         view.load()
         wait_until(lambda: not app.bg.busy and view.hasVideo)
-        assert [m["id"] for m in view.modes] == ["picture", "video"]
+        assert [m["id"] for m in view.modes] == ["picture", "video", "audio"]  # (portion 5) «Аудио» too
         view.setMode("video")
         view.setShape("wide")
         view.setQuality("fast")
@@ -8622,6 +8645,112 @@ def test_a_models_own_settings_are_set_in_the_studio_and_put_back(qapp):
         quick.close()
 
 
+def test_the_studio_makes_a_voice_music_and_a_sound_and_plays_them(qapp, tmp_path):
+    """«Стабилизация», portion 5 (the user's complaint 15 of 2026-11-27, «Нет в Студии "Аудио"»): the Studio's switch
+    has «Аудио»; there - what to make (a voice by a text, music, a sound), the voice or the length, the part it needs
+    with «Скачать» (as «Звук фильма…» fetches it), and the pieces made - each played by a click, saved as a WAV
+    where the person says, stopped by ✕, deleted for good, asked first, the player letting its file go first. With
+    no picture or video model at all the Studio offers «Аудио» too. Real QML, clicks."""
+    import struct
+    import wave
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, audio = app.visual_view, app.audio_view
+        app.openUi("draw")
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        wait_until(lambda: studio.property("visible") and not app.bg.busy and view.hasModels)
+
+        def named(name):
+            return item_named(window.contentItem(), name)
+
+        assert [m["id"] for m in view.modes] == ["picture", "video", "audio"]  # the old code: no «Аудио»
+        click(window, item_saying(named("visualMode"), "Аудио"))
+        wait_until(lambda: view.mode == "audio" and not app.bg.busy)
+        assert named("audioSide").property("visible") and named("audioStage").property("visible")
+        assert not named("visualPrompt").property("visible") and not named("visualDraw").property("visible")
+        assert not item_named(studio, "visualPicture").property("visible")  # the picture's stage is not there
+        note, make = named("audioPartNote"), named("audioMake")
+        assert note.property("visible") and "«Голос диктора» — 2,6 ГБ" in note.property("text")
+        assert not make.property("enabled")
+        click(window, named("audioGetPart"))
+        wait_until(lambda: not app.bg.busy and client.part_calls[-1] == ("sound", "voice", False))
+        client.sound_state["parts"][0].update(state="ready")
+        app.on_event({"type": "sound.changed", "payload": client.sound()})
+        assert not note.property("visible") and not make.property("enabled")  # nothing to read yet
+        named("audioWords").setProperty("text", "Привет, это проверка звука.")
+        assert make.property("enabled") and make.property("text") == "Прочитать"
+        click(window, named("audioVoice"))
+        wait_until(lambda: named("menuItem_serena") is not None)
+        click(window, named("menuItem_serena"))
+        assert named("audioVoice").property("text") == "Голос: Серена — женский"
+        wait_until(lambda: named("menuItem_serena") is None)  # the menu gone: the next click is the button's
+        click(window, make)
+        wait_until(lambda: not app.bg.busy and client.sound_calls[-1][0] == "piece")
+        assert client.sound_calls[-1][1] == {"kind": "voice", "words": "Привет, это проверка звука.", "voice": "serena"}
+
+        click(window, item_saying(named("audioKind"), "Музыка"))  # music: its own words, a length, its own part
+        assert named("audioWords").property("text") == "" and named("audioLength").property("visible")
+        assert "«Музыка» — 5,8 ГБ" in note.property("text") and not named("audioVoice").property("visible")
+        click(window, item_saying(named("audioKind"), "Голос"))
+        assert named("audioWords").property("text") == "Привет, это проверка звука."
+
+        piece = client.piece_list[0]
+        assert named(f"audioCancel_{piece['id']}").property("visible")
+        wav = app.paths.media / "2026-11" / f"{piece['id']}.wav"
+        wav.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(wav), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(24000)
+            out.writeframes(struct.pack("<h", 0) * 24000)
+        done = {**piece, "status": "done", "file": f"2026-11/{piece['id']}.wav", "seconds": 1.0}
+        client.piece_list[0] = done
+        app.on_event({"type": "sound.piece", "payload": {"piece": done}})
+        assert audio.playing.endswith(f"{piece['id']}.wav") and named("audioPlayer").property("visible")
+        assert named("audioPlaying").property("text") == "Привет, это проверка звука."
+        assert audio.pieces[0]["note"] == "0:01" and audio.pieces[0]["voice"] == "Серена — женский"
+        audio.saveAs(str(tmp_path / "привет"))
+        assert (tmp_path / "привет.wav").read_bytes() == wav.read_bytes()
+
+        going = {**piece, "id": "s9", "words": "Долгая речь.", "status": "running"}
+        client.piece_list.insert(0, dict(going))
+        app.on_event({"type": "sound.piece", "payload": {"piece": going}})
+        assert audio.pieces[0]["note"] == "делаю…" and not named("audioDelete_s9").property("visible")
+        click(window, named("audioCancel_s9"))
+        wait_until(lambda: not app.bg.busy and client.sound_calls[-1] == ("cancel", "s9"))
+        assert audio.pieces[0]["status"] == "cancelled" and named("audioDelete_s9").property("visible")
+
+        click(window, named(f"audioDelete_{piece['id']}"))
+        assert app.question["title"] == "Удалить звук?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and client.sound_calls[-1] == ("remove", piece["id"]))
+        assert audio.playing == "" and piece["id"] not in [p["id"] for p in audio.pieces]
+
+        client.visual_models = lambda: {"models": [], "default": "", "videos": []}  # no picture or video model
+        view.setMode("picture")
+        view.load()
+        wait_until(lambda: not app.bg.busy and not view.hasModels)
+        offer = named("visualAudio")
+        assert offer is not None and offer.property("visible")
+        click(window, offer)
+        assert view.mode == "audio" and named("audioSide").property("visible") and quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_picture_and_a_video_are_deleted_from_the_studio_by_clicks(qapp):
     """2026-11-25 (the user's word): «Удалить» under the picture or video shown, ✕ on a thumbnail of «Последние» - asked
     first («Отмена» deletes nothing), then the job's files are gone from the disk and it from the lists. The video
@@ -8785,7 +8914,7 @@ def test_the_studio_with_only_video_models_films(qapp):
         assert not item_named(studio, "visualInstall").property("visible")  # no «Поставить модель картинок» page
         assert item_named(studio, "visualDraw").property("visible")
         switch = item_named(studio, "visualMode")
-        assert switch.property("visible") and [m["id"] for m in view.modes] == ["picture", "video"]
+        assert switch.property("visible") and [m["id"] for m in view.modes] == ["picture", "video", "audio"]
         assert view.modes[0]["tip"].startswith("Модели для картинок ещё нет") and view.modes[1]["tip"] == ""
         sheet = quick.window.findChild(QObject, "installSheet")
         picture = next(b for b in switch.childItems() if any(t.property("text") == "Картинка" for t in b.childItems()))

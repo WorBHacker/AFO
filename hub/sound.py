@@ -289,9 +289,11 @@ class Sound:
                     await asyncio.to_thread(take.unlink, True)
         return target
 
-    async def music(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float) -> Path:
-        """Music without words by its description into `target` (WAV). Inside `working`."""
-        args = lambda b: audio_cpp.music_args(self.models, b, words=words, seconds=seconds)  # noqa: E731
+    async def music(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float,
+                    take: int = 0) -> Path:  # fmt: skip
+        """Music without words by its description into `target` (WAV). Inside `working`. `take` - which making of
+        it: each is another piece."""
+        args = lambda b: audio_cpp.music_args(self.models, b, words=words, seconds=seconds, take=take)  # noqa: E731
         return await self._make("music", target, cancel, args)
 
     async def effect(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float,

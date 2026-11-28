@@ -944,3 +944,81 @@ def test_a_scene_that_speaks_has_its_narrators_line_said_by_the_person_in_its_fr
             client.join_film(film_id)
     finally:
         server.shutdown()
+
+
+def _piece(hub, piece_id, *statuses, timeout=20.0):  # noqa: F811
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = next((p for p in hub.get("/v1/sound/pieces").json()["pieces"] if p["id"] == piece_id), None)
+        if found is not None and found["status"] in statuses:
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"{piece_id} is still {found}")
+
+
+def test_the_studios_pieces_of_sound_are_made_listed_stopped_and_removed(stand, monkeypatch):
+    """«Стабилизация», portion 5 (the user's complaint 15 of 2026-11-27, «Нет в Студии "Аудио"»): the Studio asks
+    the hub for a voice reading a text, music, a sound - each a WAV of its own, made by the engine's program (a
+    real process) in the queue, the card held meanwhile and given after; listed newest first, its file served; the
+    same words again - another seed; ✕ on one going on stops its program, on one waiting takes it out; a piece
+    removed - its file too; pieces a stopped hub left going are failed when it starts. A part not here - said with
+    «Скачать». Before: no such thing - sound only in a film."""
+    hub = stand  # noqa: F811
+    card = hub.app.state.card
+    refused = hub.post("/v1/sound/pieces", json={"kind": "music", "words": "calm piano"})
+    assert refused.status_code == 422 and "Скачать" in refused.json()["detail"]
+    install(hub, "voice", "music", "effects")
+    for wrong in ({"kind": "voice", "words": "  "}, {"kind": "voice", "words": "Привет", "voice": "nobody"},
+                  {"kind": "music", "words": "piano", "seconds": 2}, {"kind": "effect", "words": "rain", "seconds": 31},
+                  {"kind": "song", "words": "la"}):  # fmt: skip
+        assert hub.post("/v1/sound/pieces", json=wrong).status_code == 422, wrong
+
+    voice = hub.post("/v1/sound/pieces", json={"kind": "voice", "words": "Привет, это проверка.",
+                                               "voice": "serena"}).json()["piece"]  # fmt: skip
+    music = hub.post("/v1/sound/pieces", json={"kind": "music", "words": "calm piano", "seconds": 6}).json()["piece"]
+    rain = hub.post("/v1/sound/pieces", json={"kind": "effect", "words": "rain on a roof", "seconds": 2}).json()
+    assert voice["status"] == "queued" and music["seconds"] == 6.0
+    for made in (voice, music, rain["piece"]):
+        assert _piece(hub, made["id"], "done", "failed")["status"] == "done", made
+    assert card.holder == "" and card.free.is_set()  # given after
+    listed = hub.get("/v1/sound/pieces").json()["pieces"]
+    assert [p["id"] for p in listed] == [rain["piece"]["id"], music["id"], voice["id"]]  # the newest first
+    by_id = {p["id"]: p for p in listed}
+    assert by_id[voice["id"]]["seconds"] == pytest.approx(len("Привет, это проверка.") / 12, abs=0.01)
+    assert by_id[music["id"]]["seconds"] == pytest.approx(6.0, abs=0.01) and by_id[music["id"]]["took"] >= 0
+    wav = hub.get(f"/v1/sound/pieces/{music['id']}/file")
+    assert wav.status_code == 200 and wav.headers["content-type"] == "audio/wav" and wav.content[:4] == b"RIFF"
+    asked = hub.asked()[-3:]
+    assert [(a["family"], a["seed"]) for a in asked] == [("qwen3_tts", "7"), ("ace_step", "7"),
+                                                        ("moss_soundeffect", "7")]  # fmt: skip
+    assert asked[0]["voice"] == "serena" and asked[1]["seconds"] == 6.0 and asked[2]["seconds"] == 2.0
+    told = [p["piece"]["status"] for kind, p in hub.seen if kind == "sound.piece" and p["piece"]["id"] == music["id"]]
+    assert told[0] == "queued" and told[-2:] == ["running", "done"]
+
+    again = hub.post("/v1/sound/pieces", json={"kind": "music", "words": "calm piano", "seconds": 6}).json()["piece"]
+    assert _piece(hub, again["id"], "done", "failed")["status"] == "done"
+    assert (hub.asked()[-1]["family"], hub.asked()[-1]["seed"]) == ("ace_step", "8")  # another piece, not the same
+
+    monkeypatch.setenv("FAKE_AUDIO_SLEEP", "30")
+    long = hub.post("/v1/sound/pieces", json={"kind": "voice", "words": "Долгая речь.", "voice": "ryan"}).json()
+    behind = hub.post("/v1/sound/pieces", json={"kind": "effect", "words": "wind", "seconds": 1}).json()["piece"]
+    _piece(hub, long["piece"]["id"], "running")
+    assert hub.post(f"/v1/sound/pieces/{behind['id']}/cancel").json()["piece"]["status"] == "cancelled"
+    began = time.monotonic()
+    hub.post(f"/v1/sound/pieces/{long['piece']['id']}/cancel")
+    stopped = _piece(hub, long["piece"]["id"], "cancelled", "failed", "done")
+    assert stopped["status"] == "cancelled" and stopped["file"] == "" and time.monotonic() - began < 10
+    assert not [a for a in hub.asked() if a["text"] == "wind"] and card.holder == ""  # never made
+    monkeypatch.setenv("FAKE_AUDIO_SLEEP", "0")
+
+    path = hub.app.state.pieces.media / by_id[voice["id"]]["file"]
+    assert path.is_file()
+    assert hub.delete(f"/v1/sound/pieces/{voice['id']}").status_code == 200
+    assert not path.exists() and hub.get(f"/v1/sound/pieces/{voice['id']}/file").status_code == 404
+    assert voice["id"] not in [p["id"] for p in hub.get("/v1/sound/pieces").json()["pieces"]]
+    assert hub.delete(f"/v1/sound/pieces/{voice['id']}").status_code == 404
+
+    hub.app.state.db.call(lambda conn: conn.execute(
+        "INSERT INTO sound_pieces (id, kind, words, status) VALUES ('left', 'music', 'x', 'running')"))  # fmt: skip
+    assert hub.portal.call(hub.app.state.pieces.start) == 1
+    assert _piece(hub, "left", "failed")["error"] == "хаб перезапускался — звук не сделан"

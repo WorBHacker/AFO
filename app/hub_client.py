@@ -344,6 +344,21 @@ class HubClient:
     def remove_sound(self, part: str) -> dict:
         return self._call("DELETE", f"/v1/sound/parts/{part}", timeout=60)
 
+    # «Аудио» in the Studio («Стабилизация», portion 5): pieces of sound of their own (sound.piece)
+
+    def sound_pieces(self, limit: int = 50) -> dict:
+        return self._call("GET", "/v1/sound/pieces", params={"limit": limit})
+
+    def make_sound(self, spec: dict) -> dict:
+        """{kind: voice | music | effect, words, voice, seconds} - into the hub's queue."""
+        return self._call("POST", "/v1/sound/pieces", spec)
+
+    def cancel_sound(self, piece_id: str) -> dict:
+        return self._call("POST", f"/v1/sound/pieces/{piece_id}/cancel", timeout=60)
+
+    def remove_sound_piece(self, piece_id: str) -> dict:
+        return self._call("DELETE", f"/v1/sound/pieces/{piece_id}", timeout=60)
+
     def install_search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
                        plain: bool = False, build: str = "", language: str = "", license: str = "",
                        author: str = "") -> dict:  # fmt: skip

@@ -131,6 +131,7 @@ class QuickApp:
         context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Visual", self.controller.visual_view)
         context.setContextProperty("Films", self.controller.film_view)
+        context.setContextProperty("Audio", self.controller.audio_view)  # «Аудио» in the Studio (portion 5)
         context.setContextProperty("Improve", self.controller.enhance_view)
         context.setContextProperty("Setup", self.controller.setup_view)
         context.setContextProperty("Release", self.controller.release_view)

@@ -34,6 +34,7 @@ from . import commands, mentions, rows
 from .agent_keys_view import AgentKeys
 from .agents import Agents
 from .approvals import Approvals
+from .audio_view import AudioView
 from .autonomy import AutonomyView
 from .chat_folder import ChatFolder
 from .check_view import CheckView
@@ -290,6 +291,7 @@ class Controller(QObject):
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
         self.film_view = FilmView(self)  # «Режиссёр» in the Studio: a film of scenes (50.9)
+        self.audio_view = AudioView(self)  # «Аудио» in the Studio: pieces of sound of their own (portion 5)
         self.enhance_view = EnhanceView(self)  # «Улучшить ролик»: a video of the Studio's or a film's (54.6)
         for parts in (self.enhance_view.partsChanged, self.film_view.partsChanged):  # their downloads in «Установки»
             parts.connect(self.install_view.partsChanged)
@@ -2015,6 +2017,8 @@ class Controller(QObject):
             self.visual_view.on_event(kind, payload)
         elif kind.startswith(("film.", "sound.")):  # the added sound is the film's (53.6)
             self.film_view.on_event(kind, payload)
+            if kind.startswith("sound."):  # the parts are the Studio's «Аудио»'s too (portion 5)
+                self.audio_view.on_event(kind, payload)
         elif kind.startswith("enhance."):
             self.enhance_view.on_event(kind, payload)
         elif kind.startswith("gpu."):
