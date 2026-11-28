@@ -419,3 +419,60 @@ def test_a_lock_of_the_users_git_is_waited_out(repo, monkeypatch):
     with pytest.raises(sb.SandboxError) as caught:
         sb._git(repo, "branch", "-D", "x", retry=True)
     assert explain(str(caught.value))[0] == "Git занят другой программой"
+
+
+def test_a_node_projects_copy_gets_its_packages_and_removing_the_copy_leaves_them(repo, tmp_path):
+    """«Стабилизация», portion 6 (found at 61.4): a task's copy is a git worktree, and node_modules is never
+    committed - a Node project's checks could not run there, and the hub did not offer them. Now the copy's
+    node_modules is a link (a junction) to the project's own when git ignores it there, the project's scripts are
+    offered, and they run in the copy with its packages - real git, real npm; removing the copy (git, then
+    shutil.rmtree when git cannot) removes the link alone, the project's packages stay. A project whose git does not
+    ignore node_modules gets no link: applying the copy would carry it into the project."""
+    import shutil
+
+    from hub import checks
+
+    npm = shutil.which(checks.NPM)
+    if npm is None:
+        pytest.skip("npm is not on this computer")
+    (repo / "package.json").write_text('{"scripts": {"lint": "node lint.js", "test": "node test.js"}}',
+                                       encoding="utf-8", newline="\n")  # fmt: skip
+    (repo / "lint.js").write_text("console.log('чисто')\n", encoding="utf-8", newline="\n")
+    (repo / "test.js").write_text("if (require('tiny') !== 41) process.exit(1)\n", encoding="utf-8", newline="\n")
+    with (repo / ".gitignore").open("a", encoding="utf-8", newline="\n") as ignored:
+        ignored.write("node_modules/\n")
+    run_git(repo, "add", "package.json", "lint.js", "test.js", ".gitignore")
+    run_git(repo, "commit", "-q", "-m", "node")
+    package = repo / "node_modules" / "tiny"
+    package.mkdir(parents=True)
+    (package / "index.js").write_text("module.exports = 41\n", encoding="utf-8", newline="\n")
+    assert checks.found(repo) == [f"{checks.NPM} run lint", f"{checks.NPM} test"]  # the old code: none
+
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-n", project)
+    assert (inside.root / "node_modules" / "tiny" / "index.js").is_file()  # the old code: no node_modules
+    ran = subprocess.run([npm, "test"], cwd=inside.root, capture_output=True, timeout=120)
+    assert ran.returncode == 0, ran.stderr.decode("utf-8", "replace")
+    assert sb.changes(folder, "conv-n", project)["files"] == []  # the link is no change of the copy
+    sb.discard(folder, "conv-n", project)
+    assert not inside.root.exists() and (package / "index.js").is_file()  # git went no further than the link
+
+    again = sb.ensure(folder, "conv-m", project)
+    git = subprocess.run(["git", "-C", str(repo), "worktree", "list"], capture_output=True, text=True).stdout
+    assert str(again.root.name) in git.replace("\\", "/")
+    shutil.rmtree(again.root)  # as discard does when git cannot remove it
+    assert (package / "index.js").is_file()
+    run_git(repo, "worktree", "prune")
+
+    plain = tmp_path / "plain"
+    shutil.copytree(repo, plain, ignore=shutil.ignore_patterns("node_modules", ".git"))
+    (plain / ".gitignore").write_text("secret.txt\n", encoding="utf-8", newline="\n")
+    run_git(plain, "init", "-q", "-b", "main")
+    run_git(plain, "add", ".")
+    run_git(plain, "commit", "-q", "-m", "first")
+    (plain / "node_modules" / "tiny").mkdir(parents=True)
+    assert checks.found(plain) == []  # git does not ignore its packages: not offered
+    copy = sb.ensure(folder, "conv-p", project_of(plain, "p2"))
+    assert not (copy.root / "node_modules").exists()
+    sb.discard(folder, "conv-p", project_of(plain, "p2"))

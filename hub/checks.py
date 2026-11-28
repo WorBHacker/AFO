@@ -6,18 +6,26 @@ them there itself, unasked, once the user allowed the batch's checks (hub/agents
 A task's copy is a git worktree: what is not committed is not there - a Python project's environment, a Node
 project's node_modules. A Python project's checks call the programs of its own environment (.venv, venv, env) by their
 full path; `python -m pytest` puts the copy first on the import path, so it is the copy's code that is tested. A Node
-project's scripts need node_modules in the copy, and installing them there is the agent's own command: they are not
-offered (61.4). Rust and Go fetch and build into their own caches and the copy's folders."""
+project's scripts need node_modules in the copy: since «Стабилизация» portion 6 the copy's is a link to the project's
+own (hub/sandbox.py `link_packages`, when git ignores it there), so its scripts - lint, types, tests - are offered
+when the project has its packages (before: not offered, 61.4). Rust and Go fetch and build into their own caches and
+the copy's folders."""
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import tomllib
 from pathlib import Path
 from typing import Any
 
+from . import projects
+
 TIMEOUT_S = 600  # a project's tests may take long: commands.MAX_TIMEOUT_S
 ENVIRONMENTS = (".venv", "venv", "env")
+NODE_SCRIPTS = ("lint", "typecheck", "type-check", "test")  # a Node project's own checks, the cheap ones first
+NPM = "npm.cmd" if os.name == "nt" else "npm"  # not npm.ps1: PowerShell may refuse scripts by its policy
 
 
 def _scripts(root: Path) -> Path | None:
@@ -60,10 +68,30 @@ def found(root: Path) -> list[str]:
         python = _program(scripts, "python")
         if tests and python and _program(scripts, "pytest"):
             out.append(f"{python} -m pytest -q")
+    out += _node(root)
     if (root / "Cargo.toml").is_file() and shutil.which("cargo"):
         out.append("cargo test")
     if (root / "go.mod").is_file() and shutil.which("go"):
         out += ["go vet ./...", "go test ./..."]
+    return out
+
+
+def _node(root: Path) -> list[str]:
+    """A Node project's own scripts that check it (portion 6) - when its packages are here, git ignores them (so a
+    task's copy gets them by a link) and npm is on this computer; npm's own «no test specified» is no test."""
+    if not (root / "package.json").is_file() or not (root / "node_modules").is_dir() or not shutil.which(NPM):
+        return []
+    try:
+        scripts = json.loads((root / "package.json").read_bytes().decode("utf-8-sig")).get("scripts") or {}
+    except OSError, UnicodeDecodeError, ValueError, AttributeError:
+        return []
+    if not isinstance(scripts, dict) or "node_modules" not in projects.git_ignored(root, {"node_modules"}):
+        return []
+    out = []
+    for name in NODE_SCRIPTS:
+        script = scripts.get(name)
+        if isinstance(script, str) and script.strip() and "no test specified" not in script:
+            out.append(f"{NPM} test" if name == "test" else f"{NPM} run {name}")
     return out
 
 

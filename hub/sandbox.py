@@ -28,6 +28,7 @@ moves to it - the rest of the file waits in the sandbox.
 from __future__ import annotations
 
 import dataclasses
+import os
 import re
 import shutil
 import subprocess
@@ -118,7 +119,47 @@ def ensure(folder: Path, conversation_id: str, project: Project, start: str = "H
         if not _git(project.root, "for-each-ref", base_ref(conversation_id)).strip():
             _git(project.root, "update-ref", base_ref(conversation_id), _git(path, "rev-parse", "HEAD").strip(),
                  retry=True)  # fmt: skip
+    link_packages(project.root, path)
     return dataclasses.replace(project, path=str(path))
+
+
+_UNLINKED: set[str] = set()  # copies whose project's git does not ignore node_modules: not asked again
+
+
+def link_packages(root: Path, path: Path) -> bool:
+    """(«Стабилизация», portion 6) A Node project's packages in its copy: `node_modules` is not committed, so the copy
+    had none and its checks could not run (61.4); now it is a link (a junction on Windows - no rights needed) to the
+    project's own folder, when git ignores it there. What the copy installs lands in the project's packages; removing
+    the copy removes the link alone (git and shutil.rmtree do not go into a junction). Whether it is linked now."""
+    own, link = root / "node_modules", path / "node_modules"
+    if not (root / "package.json").is_file() or not own.is_dir() or os.path.lexists(link) or str(path) in _UNLINKED:
+        return link.exists()
+    try:
+        if projects.git(path, "check-ignore", "-q", "node_modules/", timeout=GIT_TIMEOUT).returncode != 0:
+            _UNLINKED.add(str(path))  # not ignored: the link would be a change of the copy, applied - of the project
+            return False
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(own), str(link))
+        else:
+            link.symlink_to(own, target_is_directory=True)
+    except OSError, subprocess.SubprocessError:
+        return False
+    return True
+
+
+def unlink_packages(path: Path) -> None:
+    """The copy's link to its project's packages taken away - the link alone, never what it points at: os.rmdir of
+    a junction (or unlink of a symlink) removes the link."""
+    link = path / "node_modules"
+    try:
+        if os.path.isjunction(link):
+            os.rmdir(link)
+        elif link.is_symlink():
+            link.unlink()
+    except OSError:
+        pass  # held by a program in the copy: git or rmtree removes it with the copy, not going into it
 
 
 IDENTITY = ("-c", "user.name=AFO", "-c", "user.email=afo@localhost")  # the hub's own commits in its sandboxes
@@ -382,6 +423,7 @@ def _merge_one(root: Path, sandbox: Path, base_rev: str, name: str, status: str,
 def discard(folder: Path, conversation_id: str, project: Project) -> None:
     path = place(folder, conversation_id, project)
     if path.exists():
+        unlink_packages(path)  # git 2.55 leaves a junction where it was, the copy's folder with it (portion 6)
         try:
             _git(project.root, "worktree", "remove", "--force", str(path), retry=True)
         except SandboxError:

@@ -659,8 +659,9 @@ def _own_checks(task: dict[str, Any], item: dict[str, Any], attached: list) -> l
     found = checks.criteria(project)
     if not found:
         raise AgentError(f"task {task['task_id']!r}: the hub found no checks of «{project.name}» it can run (a "
-                         "Python project's pytest, ruff or mypy, cargo, go - with their programs on this computer): "
-                         "give the command itself")  # fmt: skip
+                         "Python project's pytest, ruff or mypy, a Node project's lint, typecheck and test scripts "
+                         "with its node_modules, cargo, go - with their programs on this computer): give the command "
+                         "itself")  # fmt: skip
     return found
 
 

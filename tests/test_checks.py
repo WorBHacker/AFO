@@ -33,7 +33,7 @@ def test_a_projects_checks_are_found_by_its_files(tmp_path, monkeypatch):
     (bare / "tests").mkdir()
     assert checks.found(rust) == ["cargo test"]
     assert checks.found(go) == ["go vet ./...", "go test ./..."]
-    assert checks.found(node) == []  # its copy has no node_modules (61.4)
+    assert checks.found(node) == []  # its packages are not here: nothing to run its scripts with (portion 6)
     assert checks.found(bare) == []  # no environment of its own, no python or pytest on PATH
     monkeypatch.setenv("PATH", str(tmp_path / "nowhere"))
     assert checks.found(rust) == [] and checks.found(go) == []  # their programs are not on this computer
