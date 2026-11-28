@@ -80,6 +80,7 @@ from . import (
     memory,
     model_settings,
     notes,
+    pagecheck,
     sandbox,
     snapshot,
     store,
@@ -124,6 +125,7 @@ CHAT_TOOLS = [
     web.WEB_FETCH,
     websearch.WEB_SEARCH,
     autonomous.ASK_USER,  # a question with answers to pick (2026-10-28)
+    pagecheck.PAGE_CHECK,  # the model checks the page it made («Стабилизация», portion 5)
 ]  # a new chat's; older keep theirs
 # what only looks: an autonomous run may use it before its plan (the hub's reading tools, the web)
 READING = frozenset(
@@ -135,6 +137,7 @@ READING = frozenset(
         "folder_read",
         TASK_DIFF["name"],
         snapshot.NAME,
+        pagecheck.NAME,
         *computer.READING,
         *mail.READING,
     }
@@ -163,10 +166,11 @@ PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the
 # what brings in text someone else wrote - pages, searches, letters, an API's answers, other programs' screens -
 # the hub's tools and Claude Code's: a chat that used one asks its writes and commands every time (D19)
 OUTSIDE = (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], *sorted(mail.READING), "http_request", "screen_look",
-           "WebFetch", "WebSearch", snapshot.NAME)  # fmt: skip
-SNAPSHOTS_SHOWN = "[AFO hub] The pictures page_snapshot took just now, in the order of its calls."
+           "WebFetch", "WebSearch", snapshot.NAME, pagecheck.NAME)  # fmt: skip
+PAGE_PICTURES = (snapshot.NAME, pagecheck.NAME)  # the tools whose result carries a page's picture for the model
+SNAPSHOTS_SHOWN = "[AFO hub] The pictures of the pages just drawn (page_snapshot, page_check), in the calls' order."
 # for a model that takes no pictures («Стабилизация», 61.7): what stands in their place
-SNAPSHOTS_UNSEEN = "[AFO hub] page_snapshot took pictures just now; not shown: this model does not take pictures."
+SNAPSHOTS_UNSEEN = "[AFO hub] Pictures of pages were drawn just now; not shown: this model does not take pictures."
 PICTURES_UNSEEN = "(the pictures sent with this message are not shown: this model does not take pictures)"
 # an answer cut off by the end of its room - the model's window or its answer limit - in a tool call: the call did not
 # run («Стабилизация» 2026-11-27, «режим цель не выполняет коды»); said to the model this often in a run, then it ends
@@ -749,7 +753,8 @@ class ChatService:
                     return
                 continue
             await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, cloud=cloud,
-                                     counted=limits.autonomous)  # fmt: skip
+                                     counted=limits.autonomous,
+                                     sees=(model.get("capabilities") or {}).get("vision") is True)  # fmt: skip
             switch = self.autonomy.take_switch(conversation_id) if self.autonomy is not None else None
             if switch:  # the planner made the plan: the run's own model carries it out
                 found = await self._db.acall(lambda conn, m=switch: store.get_model(conn, m))
@@ -968,10 +973,11 @@ class ChatService:
         cloud: bool = False,
         let: frozenset[str] = frozenset(),
         counted: bool = False,
+        sees: bool = False,
     ) -> None:
         """Runs the calls (or answers them with `refuse` - but those in `let` -, or as not run once the user
         stopped) and stores the results as one message. `counted`: an autonomous run's - each call is counted
-        (its plan standing still, D40)."""
+        (its plan standing still, D40); `sees`: the model takes pictures (page_check draws the page then)."""
         results = []
         had_projects = bool(ctx.projects)
         for call in calls:
@@ -1047,6 +1053,8 @@ class ChatService:
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
             elif call["name"] == snapshot.NAME:  # a page's picture, for the model that sees pictures (61.7)
                 output, error, picture = await self._page_snapshot(conversation_id, call, ctx, cloud)
+            elif call["name"] == pagecheck.NAME:  # what is wrong with the page in words, its picture for one that sees
+                output, error, picture = await self._page_check(conversation_id, call, ctx, cloud, sees)
             elif call["name"] in COORDINATING:  # a coordinator's (D20; a batch - D50; its changes - 61.1)
                 if self.agents is None:
                     output, error = "agents are not available here", True
@@ -1315,27 +1323,7 @@ class ChatService:
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             width, height = snapshot.size(args)
-            if args.get("url"):
-                if cloud and await self._db.acall(lambda c: any(not p.cloud_ok for p in _attached(c, conversation_id))):
-                    raise snapshot.SnapshotError("a page of this computer is not shown to a cloud model in a chat with "
-                                                 "a local-only project (D10)")  # fmt: skip
-                page, shown = snapshot.page_url(args["url"], self.own_ports), str(args["url"]).strip()
-            elif not args.get("path"):
-                raise snapshot.SnapshotError("`url` (a page of this computer) or `path` (an HTML file)")
-            elif args.get("task_id"):
-                if self.agents is None:
-                    raise snapshot.SnapshotError("agents are not available here")
-                task_id = str(args["task_id"]).strip()
-                root, project = await self.agents.task_folder(conversation_id, task_id, str(args.get("project") or ""))
-                page = await asyncio.to_thread(snapshot.page_file, root, args["path"])
-                shown = f"{args['path']} of task {task_id} («{project.name}»)"
-            else:
-                try:
-                    project = ctx.project(args.get("project"))
-                except ToolError as exc:
-                    raise snapshot.SnapshotError(str(exc)) from None
-                page = await asyncio.to_thread(snapshot.page_file, Path(project.path), args["path"])
-                shown = f"{args['path']} of «{project.name}»"
+            page, shown = await self._page_of(conversation_id, args, ctx, cloud)
             data = await asyncio.to_thread(snapshot.take, page, width, height)
         except snapshot.SnapshotError as exc:
             return str(exc), True, {}
@@ -1344,6 +1332,49 @@ class ChatService:
         blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
         said = f"The picture of {shown}, {width}x{height} pixels: it comes to you after this result."
         return said, False, {"blob": blob, "media_type": "image/png", "size": len(data)}
+
+    async def _page_check(self, conversation_id: str, call: dict, ctx: ToolContext, cloud: bool,
+                          sees: bool) -> tuple[str, bool, dict[str, Any]]:  # fmt: skip
+        """page_check («Стабилизация», portion 5): the page the model made, opened by Edge without a window at two or
+        three widths (hub/pagecheck.py) - what is wrong with it in words; for a model that sees pictures, its picture
+        at the first width as well, kept with the chat and sent as page_snapshot's. Nothing to ask: it only looks."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        try:
+            widths = pagecheck.widths_of(args)
+            page, shown = await self._page_of(conversation_id, args, ctx, cloud)
+            drawn = sees and self.blobs is not None
+            found, data = await asyncio.to_thread(pagecheck.check, page, widths, picture=drawn)
+        except snapshot.SnapshotError as exc:
+            return str(exc), True, {}
+        said = pagecheck.report(found, shown, picture=data is not None)
+        if data is None:
+            return said, False, {}
+        blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
+        return said, False, {"blob": blob, "media_type": "image/png", "size": len(data)}
+
+    async def _page_of(self, conversation_id: str, args: dict, ctx: ToolContext, cloud: bool) -> tuple[str, str]:
+        """The page page_snapshot or page_check opens and how its answer names it: a page of this computer (`url`), an
+        HTML file of a task's copy or of the chat's project (`path`); SnapshotError when it may not be opened."""
+        if args.get("url"):
+            if cloud and await self._db.acall(lambda c: any(not p.cloud_ok for p in _attached(c, conversation_id))):
+                raise snapshot.SnapshotError("a page of this computer is not shown to a cloud model in a chat with "
+                                             "a local-only project (D10)")  # fmt: skip
+            return snapshot.page_url(args["url"], self.own_ports), str(args["url"]).strip()
+        if not args.get("path"):
+            raise snapshot.SnapshotError("`url` (a page of this computer) or `path` (an HTML file)")
+        if args.get("task_id"):
+            if self.agents is None:
+                raise snapshot.SnapshotError("agents are not available here")
+            task_id = str(args["task_id"]).strip()
+            root, project = await self.agents.task_folder(conversation_id, task_id, str(args.get("project") or ""))
+            page = await asyncio.to_thread(snapshot.page_file, root, args["path"])
+            return page, f"{args['path']} of task {task_id} («{project.name}»)"
+        try:
+            project = ctx.project(args.get("project"))
+        except ToolError as exc:
+            raise snapshot.SnapshotError(str(exc)) from None
+        page = await asyncio.to_thread(snapshot.page_file, Path(project.path), args["path"])
+        return page, f"{args['path']} of «{project.name}»"
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is
@@ -1929,10 +1960,10 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: P
                 if b.get("type") == "tool_result"
             ]
             taken = [{"type": "image", "blob": b["blob"], "media_type": b.get("media_type") or "image/png"}
-                     for b in message.content if b.get("type") == "tool_result" and b.get("name") == snapshot.NAME
+                     for b in message.content if b.get("type") == "tool_result" and b.get("name") in PAGE_PICTURES
                      and b.get("blob") and not b.get("error")]  # fmt: skip
             pictures = attachments.images(blobs, taken)
-            if pictures:  # the pages page_snapshot drew (61.7): a tool's answer carries no picture in every API
+            if pictures:  # the pages page_snapshot or page_check drew (61.7): not every API takes a tool's picture
                 prompt.append({"role": "user", "content": SNAPSHOTS_SHOWN, "images": pictures})
             continue
         if message.role not in ("user", "assistant"):

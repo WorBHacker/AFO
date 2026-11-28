@@ -48,6 +48,8 @@ SHORT = {
     "ask_user": "Ask the user one clear question and wait; offer short answers in `options`.",
     "set_plan": "Make or replace the plan (why in `reason`): steps in order, each with how it is checked.",
     "update_step": "A step's state: running, done (result and how checked), failed or skipped (why).",
+    "page_check": "Check a page you made as a browser shows it: console errors, CSS dropped, blocks past the edge or "
+    "of zero size - at 2-3 `widths`. `url` (localhost) or `path` (an HTML file).",
 }
 
 

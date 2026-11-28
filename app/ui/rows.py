@@ -219,6 +219,8 @@ TOOL_ICONS = {
     "delegate_tasks": "agent",
     "generate_image": "image",  # 29.6
     "generate_video": "image",  # 29.8б
+    "page_snapshot": "image",
+    "page_check": "check",  # «Стабилизация», portion 5
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -317,6 +319,10 @@ def tool_label(name: str, args: Any) -> str:
                 "Рисую «{prompt}»", prompt=prompt)  # fmt: skip
         case "WebSearch":
             return tr("Ищу в сети «{query}»", query=a.get("query", ""))
+        case "page_check" | "page_snapshot":  # «Стабилизация», portion 5; 61.7
+            page = str(a.get("url") or path)
+            return tr("Проверяю страницу {page}", page=page) if name == "page_check" else tr(
+                "Смотрю страницу {page}", page=page)  # fmt: skip
         case "TodoWrite":
             return tr("Обновляю список задач")
         case "delegate_task":
