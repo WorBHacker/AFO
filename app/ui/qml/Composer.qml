@@ -302,10 +302,26 @@ Item {
         onChosen: (id) => App.setChatRefusal(id)
     }
 
+    // («Стабилизация», portion 6) a chat with a project: its local model takes no tools, or has too little context
+    Text {
+        id: projectNote
+        objectName: "projectWarning"
+        visible: App.projectWarning !== ""
+        x: card.x + 10
+        y: suggestion.visible ? suggestion.y + suggestion.height + 6 : (asked.visible ? asked.height + 10 : 4)
+        width: composer.column - 20
+        wrapMode: Text.Wrap
+        text: App.projectWarning
+        color: Theme.p.warn
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+
     Rectangle {
         id: card
         x: (parent.width - composer.column) / 2
-        y: (suggestion.visible ? suggestion.y + suggestion.height + 6 : (asked.visible ? asked.height + 10 : 4))
+        y: projectNote.visible ? projectNote.y + projectNote.height + 6
+           : (suggestion.visible ? suggestion.y + suggestion.height + 6 : (asked.visible ? asked.height + 10 : 4))
         width: composer.column
         height: input.y + input.height + controls.height + 18
         radius: 8

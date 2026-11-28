@@ -196,6 +196,8 @@ class OpenAICompatProvider:
         # llama-swap's on this computer (0.1.13): each model's reasoning depths, as its chat template names them
         # (hub/llama_config.model_efforts) - in the catalog for the window, and a request asks one the model takes
         self.efforts: Callable[[], Awaitable[dict[str, list[str]]]] | None = None
+        # and whether each takes tools, as its chat template says («Стабилизация», portion 6: the picker's mark)
+        self.tools_known: Callable[[], Awaitable[dict[str, bool]]] | None = None
         self._levels: dict[str, list[str]] = {}  # a model (or its alias) -> the depths it takes, when it names them
         self._aliases: dict[str, str] = {}  # llama-swap's aliases of a model -> its id, as listed
 
@@ -213,6 +215,7 @@ class OpenAICompatProvider:
         models = []
         vectors: set[str] = set()
         known = await self.efforts() if self.efforts is not None else {}
+        takes = await self.tools_known() if self.tools_known is not None else {}
         self._aliases = {alias: item["id"] for item in response.json().get("data", [])
                          for alias in item.get("aliases") or []}  # fmt: skip
         self._levels = self._with_aliases(known)
@@ -240,6 +243,7 @@ class OpenAICompatProvider:
                         "description": item.get("description", ""),
                         **({"refusal_vector": True} if refusal_vector(meta) else {}),
                         **({"efforts": known[ref]} if known.get(ref) else {}),  # 0.1.13: the depths it takes
+                        **({"tools": takes[ref]} if ref in takes else {}),  # portion 6: whether it takes tools
                     },
                     prices={},  # local models are free; a cloud OpenAI-compat provider fills this in
                 )

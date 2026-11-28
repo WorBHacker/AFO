@@ -848,7 +848,12 @@ async def kept_log(base_url: str, model_id: str) -> str:
 # exception for any other, so llama.cpp answers 500 to «max» (found 2026-11-14): the words in its brackets
 _EFFORT_CHECK = re.compile(r"reasoning_effort\b[^\n]*?\bin\s*[(\[]([^)\]\n]*)[)\]]")
 _QUOTED = re.compile(r"['\"]([\w-]+)['\"]")
-_TEMPLATES: dict[tuple[str, int, int], list[str]] = {}  # a template's file (path, size, time) -> its depths
+# («Стабилизация», portion 6) a template that reads the tools a request gives - `{% if tools %}`, `{% for tool in
+# tools %}` - or writes the calls of its history (llama.cpp b11899, common/chat.cpp: then it describes the tools
+# itself, «may produce bad results»); one that reads neither - the model never sees them
+_TOOLS_READ = re.compile(r"\{[{%][^}]*?\btool(?:s|_calls)\b")
+# a template's file (path, size, time) -> its depths and whether it takes tools
+_TEMPLATES: dict[tuple[str, int, int], tuple[list[str], bool]] = {}
 
 
 def template_efforts(template: str) -> list[str]:
@@ -860,16 +865,23 @@ def template_efforts(template: str) -> list[str]:
     return []
 
 
-def _file_efforts(path: Path, read: Callable[[Path], str]) -> list[str]:
-    """A template's depths from a file, read once while its size and time stay; [] - it cannot be read."""
+def template_tools(template: str) -> bool:
+    """Whether a chat template takes the tools of a request (portion 6): it reads them, or the calls."""
+    return bool(_TOOLS_READ.search(template))
+
+
+def _file_facts(path: Path, read: Callable[[Path], str]) -> tuple[list[str], bool] | None:
+    """A template's depths and whether it takes tools, from a file, read once while its size and time stay; None -
+    it cannot be read."""
     try:
         stat = path.stat()
         key = (str(path), stat.st_size, stat.st_mtime_ns)
         if key not in _TEMPLATES:
-            _TEMPLATES[key] = template_efforts(read(path))
+            template = read(path)
+            _TEMPLATES[key] = (template_efforts(template), template_tools(template))
         return _TEMPLATES[key]
     except OSError, ValueError:  # gone, locked by another program, not a GGUF (GGUFError is a ValueError)
-        return []
+        return None
 
 
 def _gguf_template(path: Path) -> str:
@@ -877,10 +889,11 @@ def _gguf_template(path: Path) -> str:
     return str(read_header(path, ("tokenizer.chat_template",)).get("tokenizer.chat_template") or "")
 
 
-def _command_efforts(view: dict[str, Any]) -> list[str]:
-    """The depths of the template a llama.cpp model's command runs: its --chat-template-file, else its --chat-template
-    (a template's text, or a built-in's name - that names none), else the one in its file's header; none without
-    Jinja (--no-jinja: llama.cpp's own formatting, which does not read reasoning_effort)."""
+def _command_facts(view: dict[str, Any]) -> tuple[list[str], bool | None]:
+    """The depths of the template a llama.cpp model's command runs, and whether it takes tools: its
+    --chat-template-file, else its --chat-template (a template's text, or a built-in's name - that names no depth,
+    its tools not known), else the one in its file's header; neither without Jinja (--no-jinja: llama.cpp's own
+    formatting, which reads no reasoning_effort and no tools). Tools not known (None): a file that cannot be read."""
     tokens = _TOKEN.findall(view["command"])
 
     def value(flag: str) -> str | None:
@@ -888,12 +901,16 @@ def _command_efforts(view: dict[str, Any]) -> list[str]:
         return _unquote(tokens[at + 1]) if at is not None and at + 1 < len(tokens) else None
 
     if _flag(tokens, ("--no-jinja",)) is not None:
-        return []
+        return [], False
     if (file := value("--chat-template-file")) is not None:
-        return _file_efforts(Path(file), lambda p: p.read_bytes().decode("utf-8", "replace"))
-    if (inline := value("--chat-template")) is not None:
-        return template_efforts(inline)
-    return _file_efforts(Path(view["file"]), _gguf_template) if view.get("file") else []
+        facts = _file_facts(Path(file), lambda p: p.read_bytes().decode("utf-8", "replace"))
+    elif (inline := value("--chat-template")) is not None:
+        return template_efforts(inline), template_tools(inline) if "{" in inline else None
+    elif view.get("file"):
+        facts = _file_facts(Path(view["file"]), _gguf_template)
+    else:
+        return [], None
+    return facts if facts is not None else ([], None)
 
 
 def efforts_now(path: Path | None = None) -> dict[str, list[str]]:
@@ -904,9 +921,30 @@ def efforts_now(path: Path | None = None) -> dict[str, list[str]]:
     for model_id in model_blocks(text):
         with contextlib.suppress(ConfigError):
             view = model_view(text, model_id)
-            if runtimes.templated(view) and (levels := _command_efforts(view)):
+            if runtimes.templated(view) and (levels := _command_facts(view)[0]):
                 out[model_id] = levels
     return out
+
+
+def tools_now(path: Path | None = None) -> dict[str, bool]:
+    """(portion 6) Each llama.cpp model of the config whose chat template is known: whether it takes tools. As
+    efforts_now: the config read each time, a template once per file."""
+    text = (path or config_path()).read_bytes().decode("utf-8")
+    out: dict[str, bool] = {}
+    for model_id in model_blocks(text):
+        with contextlib.suppress(ConfigError):
+            view = model_view(text, model_id)
+            if runtimes.templated(view) and (takes := _command_facts(view)[1]) is not None:
+                out[model_id] = takes
+    return out
+
+
+async def model_tools(path: Path | None = None) -> dict[str, bool]:
+    """tools_now off the event loop; {} - no config yet, or one that cannot be read."""
+    try:
+        return await asyncio.to_thread(tools_now, path)
+    except OSError, ValueError:
+        return {}
 
 
 async def model_efforts(path: Path | None = None) -> dict[str, list[str]]:

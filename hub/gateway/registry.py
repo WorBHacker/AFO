@@ -122,6 +122,7 @@ def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStor
     swap = OpenAICompatProvider("llama-swap", llama_swap_url, locality=locality_of(llama_swap_url))
     if swap.locality == "local":  # its config and model files are on this computer: each model's depths (0.1.13)
         swap.efforts = llama_config.model_efforts
+        swap.tools_known = llama_config.model_tools  # and whether each takes tools («Стабилизация», portion 6)
     gateway.register(swap)
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
     gateway.register(GeminiProvider(lambda: secrets.get(GEMINI_API_KEY)))

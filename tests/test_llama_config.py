@@ -943,6 +943,44 @@ def test_each_models_depths_from_its_file_or_its_template_file(tmp_path):
     assert asyncio.run(lc.model_efforts(config)) == {}
 
 
+TOOLS_TEMPLATE = ("{%- if tools %}{{- '<tools>' }}{%- for tool in tools %}{{- tool | tojson }}{%- endfor %}"
+                  "{{- '</tools>' }}{%- endif %}{%- for message in messages %}{{- message.content }}{%- endfor %}")  # fmt: skip
+
+
+def test_each_local_model_says_whether_its_chat_template_takes_tools(tmp_path):
+    """«Стабилизация», portion 6 (the user's words: «В списке моделей нет отметки, какие умеют работать с
+    инструментами»): a llama.cpp model takes tools when the template it runs reads them - its --chat-template-file,
+    else the one in its file; not with --no-jinja; not known - a built-in template's name, a file that cannot be
+    read - not said. The same reading as the depths: once per file."""
+    assert lc.template_tools(TOOLS_TEMPLATE) and lc.template_tools("{% for tool in tools -%}x{% endfor %}")
+    for template in (QWEN38, "{{ messages }}", "Use the tools you are given.", ""):
+        assert not lc.template_tools(template)
+    takes = gguf(tmp_path / "takes.gguf", {"general.architecture": "qwen35", "tokenizer.chat_template": TOOLS_TEMPLATE})
+    plain = gguf(tmp_path / "plain.gguf", {"general.architecture": "llama", "tokenizer.chat_template": QWEN38})
+    own = tmp_path / "own.jinja"
+    own.write_bytes(TOOLS_TEMPLATE.encode())
+
+    def model(name, flags):
+        return (f'  "{name}":\n    cmd: |\n      ${{llama_server}}\n      {flags}\n'
+                "      --host 127.0.0.1 --port ${PORT}\n\n")  # fmt: skip
+
+    config = tmp_path / "config.yaml"
+    config.write_bytes(CONFIG.replace('  "big":', model("takes", f'-m "{takes.as_posix()}" --jinja')
+                                      + model("plain", f'-m "{plain.as_posix()}"')
+                                      + model("own", f'-m "{plain.as_posix()}" --chat-template-file "{own.as_posix()}"')
+                                      + model("legacy", f'-m "{takes.as_posix()}" --no-jinja')
+                                      + model("named", f'-m "{takes.as_posix()}" --chat-template chatml')
+                                      + model("gone", '-m "F:/nowhere/gone.gguf"')
+                                      + '  "big":').encode())  # fmt: skip
+    found = lc.tools_now(config)
+    assert {k: found[k] for k in ("takes", "plain", "own", "legacy")} == {"takes": True, "plain": False, "own": True,
+                                                                          "legacy": False}  # fmt: skip
+    assert "named" not in found and "gone" not in found  # not known: not said
+    assert asyncio.run(lc.model_tools(config)) == found
+    config.unlink()
+    assert asyncio.run(lc.model_tools(config)) == {}
+
+
 def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file(tmp_path):
     """42.1: after the wizard updates llama.cpp, a flag the new build took away would stop llama-swap from starting
     the model. Under the lock the config's commands are written as the build spells them - the old name under its

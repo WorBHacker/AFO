@@ -81,6 +81,7 @@ MOVED_FLASH_MS = 20000  # the hub on another port (43.9): long enough to read an
 MODES = ("chats", "projects", "agent", "studio")  # «Студия» (48.7а): pictures and videos on a screen of their own
 DRAFTS_KEY = "chat/drafts"  # app.ini: what was typed in each chat and not sent - kept across switches and crashes
 NEW_CHAT = "new"  # the drafts' key of a chat not made yet
+PROJECT_CONTEXT = 16384  # less context than this in a chat with a project: said (portion 6)
 DRAFT_SAVE_MS = 700  # typing is saved this long after the last key
 NOT_CONNECTED = N_("Хаб ещё не подключён")
 # opens the goal's card
@@ -643,6 +644,25 @@ class Controller(QObject):
             for pid in self._chat_projects
             if pid in known
         ]
+
+    @Property(str, notify=chatProjectsChanged)
+    def projectWarning(self) -> str:
+        """(«Стабилизация», portion 6, the user's words: «В режиме проекта предупреждать, если выбранная модель не
+        умеет») A chat with a project and a local model that takes no tools - or has less context than a project's
+        tools leave room in (their definitions take some 2K before the first message)."""
+        model = self.models.get(self._model_id) or {}
+        if not self._chat_projects or model.get("locality") != "local":
+            return ""
+        caps, name = model.get("capabilities") or {}, model.get("name") or self._model_id
+        if caps.get("tools") is False:
+            return tr("«{name}» не умеет вызывать инструменты — в проекте она сможет только отвечать текстом. "
+                      "Выберите другую модель или включите «Инструменты» в её настройках", name=name)  # fmt: skip
+        context = caps.get("context")
+        if isinstance(context, int) and 0 < context < PROJECT_CONTEXT:
+            return tr("У «{name}» {size} тыс. контекста — описание инструментов проекта займёт около 2 тыс. из "
+                      "них. Для проекта лучше «Баланс» в настройках модели — 32 тыс.", name=name,
+                      size=round(context / 1024))  # fmt: skip
+        return ""
 
     # ---------- the model's question in this chat, the chat's rights (2026-10-28) ----------
 

@@ -676,6 +676,8 @@ def picker_items(
             caps = m.get("capabilities") or {}
             if local:
                 note = tr("загружена в видеопамять") if ref in loaded else tr("загрузится при отправке")
+                if "tools" in caps:  # («Стабилизация», portion 6) as its chat template says, or the person set it
+                    note += tr(" · с инструментами") if caps["tools"] else tr(" · без инструментов")
             elif caps.get("subscription"):
                 note = tr("подписка Claude Code · работает в папке проекта чата")
                 if subscription:

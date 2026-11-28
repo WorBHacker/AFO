@@ -4042,6 +4042,49 @@ def test_tool_rows():
     assert built[2]["tools"] == []
 
 
+def test_a_chat_with_a_project_warns_of_a_model_that_takes_no_tools_or_little_context(qapp):
+    """«Стабилизация», portion 6 (the user's words: «В списке моделей нет отметки, какие умеют работать с
+    инструментами. В режиме проекта предупреждать, если выбранная модель не умеет»; «Контекст 8 тыс. … описание
+    инструментов занимает 2,1 тыс.»): the picker says it at each local model the hub knows of; a chat with a project
+    and a local model without tools, or with under 16K of context, says so above the input. Real QML."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy and app.projects.items)
+        window.resize(1200, 800)
+        window.show()
+        coder = app.models["llama-swap/coder"]
+
+        def caps(**these):  # the hub's catalog, as the window takes it
+            app._set_models([{**m, "capabilities": these} if m["id"] == coder["id"] else m for m in app.model_list])
+
+        caps(tools=False, context=32768)
+        app.chooseModel("llama-swap/coder")
+        note = quick.window.findChild(QObject, "projectWarning")
+        assert app.projectWarning == "" and not note.property("visible")  # no project yet
+        def local_note():  # in the section of local models, not the advice's
+            return [i for i in app.pickerItems if i.get("id") == "llama-swap/coder"][-1]["note"]
+
+        assert local_note().endswith(" · без инструментов")  # the old code: no word of it
+        app.toggleChatProject("p1")
+        assert app.projectWarning.startswith("«Coder» не умеет вызывать инструменты")
+        wait_until(lambda: note.property("visible") and note.property("height") > 0)
+        caps(tools=True, context=8192)
+        assert app.projectWarning.startswith("У «Coder» 8 тыс. контекста")
+        assert local_note().endswith(" · с инструментами")
+        caps(tools=True, context=32768)
+        wait_until(lambda: app.projectWarning == "" and not note.property("visible"))
+        app.chooseModel("anthropic/claude-opus-5-5")  # a cloud one: its tools are its provider's
+        assert app.projectWarning == "" and quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_chat_projects_and_tool_calls(app):
     client = app.client
     wait_until(lambda: app.projects.items)
