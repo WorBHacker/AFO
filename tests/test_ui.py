@@ -11223,7 +11223,7 @@ def test_the_card_names_what_always_covers_and_says_the_chat_read_others_text(qa
     """0.1.17, the user's words of 2026-11-17: «Название кнопки должно говорить, что именно разрешается» - an edit's
     «всегда» is all edits of the project, a command's all its commands; and a chat that has read a site, a search or
     a letter says so on its cards, since an answer for the chat or the project now holds there too."""
-    from PySide6.QtCore import QObject
+    from PySide6.QtCore import QObject, QPointF
 
     from app.ui.main import QuickApp
 
@@ -11245,8 +11245,19 @@ def test_the_card_names_what_always_covers_and_says_the_chat_read_others_text(qa
         wait_until(lambda: not app.bg.busy and app.approvals.count == 2)
         opened(app)
         card = quick.window.findChild(QObject, "chatApprovalCard")
-        wait_until(lambda: item_named(card, "approveProject") is not None)
-        settle()
+        # the window done with its loads and the card in its place (2026-11-27: a click was lost 1 time in 3 - the
+        # guess, not seen: the card still moved as the chat came in, and the click landed where its button had been)
+        wait_until(lambda: not app.bg.busy and item_named(card, "approveProject") is not None)
+        button = item_named(card, "approveProject")
+        banner = quick.window.findChild(QObject, "approvalBanner")
+        wait_until(lambda: banner.property("opacity") == 1)
+        where = None
+        for _ in range(50):  # the same place twice running
+            settle()
+            now = button.mapToScene(QPointF(0, 0)).toTuple()
+            if now == where:
+                break
+            where = now
         said = item_named(card, "approvalReadOthers")
         assert item_named(card, "approveProject").property("text") == "Разрешить все правки файлов в «LocalChat»"
         assert said.property("visible") and said.property("text").startswith("Этот чат читал чужой текст")

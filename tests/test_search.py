@@ -9,10 +9,9 @@ from hub.projects import ProjectError
 from hub.server import create_app
 from hub.settings import HubSettings
 
-ENGINES = [
-    pytest.param(True, id="ripgrep", marks=pytest.mark.skipif(search.ripgrep() is None, reason="no ripgrep")),
-    pytest.param(False, id="walk"),
-]
+# whether ripgrep is here is asked in the test, inside its own AFO folder: asked as the tests were gathered it found
+# the person's AFO's copy, and the test then ran without it - in a worktree, with no tools/ripgrep (2026-11-28)
+ENGINES = [pytest.param(True, id="ripgrep"), pytest.param(False, id="walk")]
 
 
 def found(result):
@@ -29,6 +28,9 @@ def tree(repo):
 
 @pytest.mark.parametrize("use_ripgrep", ENGINES)
 def test_search(tree, use_ripgrep):
+    if use_ripgrep and search.ripgrep() is None:
+        pytest.skip("no ripgrep: neither the checkout's tools/ripgrep, nor AFO's own, nor on PATH")
+
     def run(text, **kw):
         return search.search(tree, text, use_ripgrep=use_ripgrep, **kw)
 
