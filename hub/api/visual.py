@@ -45,6 +45,34 @@ async def models(request: Request, client: Annotated[Client, Depends(require_app
     return await _visual(request).models()
 
 
+class Own(BaseModel):
+    """A picture or video model's own settings («Стабилизация», portion 5): those not given - as it was installed;
+    no seed - a new one each time."""
+
+    steps: int | None = Field(default=None, ge=STEPS[0], le=STEPS[1])
+    cfg: float | None = Field(default=None, ge=GUIDANCE[0], le=GUIDANCE[1])
+    negative: str = Field(default="", max_length=2000)
+    seed: int | None = Field(default=None, ge=0, lt=2**31)
+
+
+@router.put("/models/{model_id}/own")
+async def set_own(request: Request, model_id: str, body: Own,
+                  client: Annotated[Client, Depends(require_app)]) -> dict:  # fmt: skip
+    try:
+        return {"own": await _visual(request).set_own(model_id, body.model_dump())}
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+
+
+@router.delete("/models/{model_id}/own")
+async def drop_own(request: Request, model_id: str, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """«Как было»: the model as it was installed."""
+    try:
+        return {"own": await _visual(request).set_own(model_id, None)}
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+
+
 class Image(BaseModel):
     prompt: str = Field(min_length=1, max_length=4000)
     negative: str = Field(default="", max_length=2000)

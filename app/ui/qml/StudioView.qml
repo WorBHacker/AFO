@@ -15,7 +15,26 @@ Item {
     readonly property bool byHand: Films.kind !== "director"
     // a picture to start from, in use: «По картинке», or a video's first frame unless the video is by words (48.7б)
     readonly property bool fromPicture: Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
+    property bool tuneOpen: false  // «Настройки модели» unfolded (portion 5)
     onVisibleChanged: if (visible) Visual.load()
+
+    // one of the model's own settings: saved when typed out (Enter, or the focus gone); while typed the hub's value
+    // does not come over it - the Studio's events change `Visual` often; another model chosen meanwhile - its own
+    // shown, what was typed not given to it
+    component TuneField: Field {
+        id: tuneField
+        property string key
+        readonly property string model: Visual.tuning.model || ""
+        width: parent ? parent.width : 120
+        onEditingFinished: Visual.setTuning(key, text)
+        onAccepted: focus = false  // Enter: done - what is kept shown
+        onModelChanged: text = Visual.tuning[key] || ""
+        Binding on text {
+            value: Visual.tuning[tuneField.key] || ""
+            when: !tuneField.activeFocus
+            restoreMode: Binding.RestoreNone
+        }
+    }
 
     component Note: Text {
         width: parent ? parent.width : 300
@@ -254,6 +273,69 @@ Item {
                     options: Visual.qualities
                     value: Visual.quality
                     onPicked: (id) => Visual.setQuality(id)
+                }
+                // «Настройки модели» («Стабилизация», portion 5; the user's complaint 13): the model's own steps,
+                // «сила подсказки», negative and seed - an empty field: as it was installed; «Как было» - all of them
+                PlainButton {
+                    objectName: "visualTuneToggle"
+                    visible: Visual.tuning.model !== undefined
+                    iconName: studio.tuneOpen ? "chevron-down" : "chevron-right"
+                    text: Visual.tuning.own ? qsTr("Настройки модели: свои") : qsTr("Настройки модели")
+                    onClicked: studio.tuneOpen = !studio.tuneOpen
+                }
+                Column {
+                    id: tune
+                    objectName: "visualTune"
+                    width: parent.width
+                    spacing: 6
+                    visible: studio.tuneOpen && Visual.tuning.model !== undefined
+                    Note { text: qsTr("Для модели %1. Пустое поле — как при установке.").arg(Visual.tuning.name || "") }
+                    Row {
+                        width: parent.width
+                        spacing: 8
+                        Column {
+                            width: (parent.width - 8) / 2
+                            spacing: 4
+                            Label { text: qsTr("Шаги") }
+                            TuneField {
+                                objectName: "visualSteps"
+                                key: "steps"
+                                placeholderText: Visual.tuning.stepsHint || ""
+                                inputMethodHints: Qt.ImhDigitsOnly
+                            }
+                        }
+                        Column {
+                            width: (parent.width - 8) / 2
+                            spacing: 4
+                            Label { text: qsTr("Сила подсказки") }
+                            TuneField {
+                                objectName: "visualCfg"
+                                key: "cfg"
+                                placeholderText: Visual.tuning.cfgHint || ""
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                            }
+                        }
+                    }
+                    Label { text: qsTr("Чего не должно быть") }
+                    TuneField {
+                        objectName: "visualNegative"
+                        key: "negative"
+                        placeholderText: qsTr("Например: размыто, лишние пальцы, надписи")
+                    }
+                    Label { text: qsTr("Зерно") }
+                    TuneField {
+                        objectName: "visualSeed"
+                        key: "seed"
+                        placeholderText: qsTr("Пусто — каждый раз новое")
+                        inputMethodHints: Qt.ImhDigitsOnly
+                    }
+                    PlainButton {
+                        objectName: "visualTuneReset"
+                        visible: Visual.tuning.own === true
+                        iconName: "refresh"
+                        text: qsTr("Как было")
+                        onClicked: Visual.resetTuning()
+                    }
                 }
                 PlainButton {
                     objectName: "visualFromFile"

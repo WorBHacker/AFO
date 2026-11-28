@@ -393,6 +393,7 @@ class FakeClient:
         self.visual_calls = []  # «Нарисовать» (29.5)
         self.visual_jobs_list = []
         self.visual_rungs = {}  # the rung each model came out on here (29.4б)
+        self.visual_owns = {}  # each model's own settings (portion 5)
         self.visual_videos = []  # the video models (29.8)
         self.film_calls = []  # «Режиссёр» (50.9)
         self.films_list = []
@@ -699,8 +700,15 @@ class FakeClient:
                    "steps": 4, "cfg": 1.0},
                   {"model_id": "z-image-turbo", "name": "Z-Image-Turbo", "tier": "quality", "size": 1024,
                    "steps": 8, "cfg": 1.0}]  # fmt: skip
-        return {"models": [{"pixels": 0, "instead": "", **m, **self.visual_rungs.get(m["model_id"], {})}
-                           for m in models], "default": "flux2-klein-4b", "videos": self.visual_videos}  # fmt: skip
+        return {"models": [{"pixels": 0, "instead": "", **m, **self.visual_rungs.get(m["model_id"], {}),
+                            "own": dict(self.visual_owns.get(m["model_id"]) or {})} for m in models],
+                "default": "flux2-klein-4b", "videos": self.visual_videos}  # fmt: skip
+
+    def visual_own(self, model_id, values):
+        self.visual_calls.append(("own", model_id, values))
+        kept = {k: v for k, v in (values or {}).items() if v not in (None, "")}
+        self.visual_owns[model_id] = kept
+        return {"own": kept}
 
     def visual_video(self, spec):
         self.visual_calls.append(("video", spec))
@@ -7604,7 +7612,7 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         view.draw()
         wait_until(lambda: not app.bg.busy and client.visual_calls)
         assert client.visual_calls[-1] == ("draw", {"prompt": "рыжая лиса в снегу", "model": "flux2-klein-4b",
-                                                    "width": 1344, "height": 768, "seed": -1})  # fmt: skip
+                                                    "width": 1344, "height": 768, "seed": None})  # fmt: skip
         assert view.busy and view.pictureSource == ""
         job = {**client.visual_jobs_list[0], "status": "running"}
         app.on_event({"type": "visual.changed", "payload": {"job": job}})
@@ -7733,7 +7741,7 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         view.draw()
         wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "video")
         assert client.visual_calls[-1][1] == {"prompt": "рыжая лиса в снегу", "model": "wan", "shape": "wide",
-                                              "seconds": 3.0, "hd": True, "seed": -1}  # fmt: skip
+                                              "seconds": 3.0, "hd": True, "seed": None}  # fmt: skip
         filmed = client.visual_jobs_list[0]
         app.on_event({"type": "visual.changed", "payload": {"job": {**filmed, "status": "running"}}})
         assert view.statusText == "снимаю видео…" and view.busy
@@ -8517,6 +8525,99 @@ def test_a_picture_or_a_video_that_did_not_come_out_is_asked_again_by_a_click(qa
         wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 4)
         assert client.visual_calls[-1][0] == "video" and client.visual_calls[-1][1]["seed"] == 7
         assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_models_own_settings_are_set_in_the_studio_and_put_back(qapp):
+    """«Стабилизация», portion 5 (the user's complaint 13 of 2026-11-27: no settings for picture and video models):
+    «Настройки модели» in the Studio unfolds the model's steps, «сила подсказки», negative and seed - empty, what it
+    was installed with shown faint; a value typed out is the model's own in the hub, one that will not do is said
+    and not sent; «Нарисовать» leaves the seed to the hub (the model's own), «Ещё вариант» asks a new one; a video
+    model has its own; «Как было» - as installed. Real QML, typing and clicks."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtGui import QKeyEvent
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 20,
+                                 "cfg": 3.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}, "own": {}}]  # fmt: skip
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса в снегу")
+        app.openUi("draw")
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        wait_until(lambda: studio.property("visible") and not app.bg.busy and view.hasModels)
+        toggle, tune = item_named(studio, "visualTuneToggle"), item_named(studio, "visualTune")
+        assert toggle is not None and toggle.property("visible") and not tune.property("visible")  # old code: none
+        click(window, toggle)
+        assert tune.property("visible") and view.tuning["name"] == "FLUX.2 [klein] 4B"
+        steps, cfg = item_named(studio, "visualSteps"), item_named(studio, "visualCfg")
+        negative, seed = item_named(studio, "visualNegative"), item_named(studio, "visualSeed")
+        assert (steps.property("text"), steps.property("placeholderText")) == ("", "4")
+        assert (cfg.property("text"), cfg.property("placeholderText")) == ("", "1")
+        assert not item_named(studio, "visualTuneReset").property("visible")
+
+        def key(code, text="", modifiers=Qt.KeyboardModifier.NoModifier):
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(window, QKeyEvent(kind, code, modifiers, text))
+
+        def typed(field, text):  # a person's: a click into it, all of it chosen, typed over, Enter
+            click(window, field)
+            assert field.property("activeFocus")
+            key(Qt.Key.Key_A, "a", Qt.KeyboardModifier.ControlModifier)
+            for char in text:
+                key(Qt.Key.Key_unknown, char)
+            key(Qt.Key.Key_Return, "\r")
+            wait_until(lambda: not app.bg.busy)
+
+        typed(steps, "12")
+        assert client.visual_calls[-1] == ("own", "flux2-klein-4b", {"steps": 12, "cfg": None, "negative": "",
+                                                                      "seed": None})  # fmt: skip
+        typed(cfg, "2,5")
+        typed(negative, "размыто")
+        typed(seed, "77")
+        assert client.visual_owns["flux2-klein-4b"] == {"steps": 12, "cfg": 2.5, "negative": "размыто", "seed": 77}
+        calls = len(client.visual_calls)
+        typed(steps, "99")  # past 60: said, not sent
+        assert len(client.visual_calls) == calls and app.flashError and "от 1 до 60" in app.flashText
+        typed(seed, "-3")
+        assert len(client.visual_calls) == calls and "Зерно" in app.flashText
+        click(window, item_named(studio, "visualPrompt"))  # the focus away: the fields show what is kept
+        wait_until(lambda: steps.property("text") == "12" and seed.property("text") == "77")
+        assert toggle.property("text") == "Настройки модели: свои"
+
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "draw")
+        assert client.visual_calls[-1][1]["seed"] is None  # the hub takes the model's own
+        app.on_event({"type": "visual.changed", "payload": {"job": {**client.visual_jobs_list[0], "status": "done"}}})
+        view.again()
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == calls + 2)
+        assert client.visual_calls[-1][0] == "draw" and client.visual_calls[-1][1]["seed"] == -1  # a new one
+        app.on_event({"type": "visual.changed", "payload": {"job": {**client.visual_jobs_list[0], "status": "done"}}})
+
+        view.setMode("video")  # the video's model has its own
+        wait_until(lambda: view.tuning.get("model") == "ltx")
+        assert steps.property("text") == "" and steps.property("placeholderText") == "20"
+        typed(steps, "8")
+        assert client.visual_calls[-1] == ("own", "ltx", {"steps": 8, "cfg": None, "negative": "", "seed": None})
+        view.setMode("picture")
+        wait_until(lambda: steps.property("text") == "12")
+        reset = item_named(studio, "visualTuneReset")
+        assert reset.property("visible")
+        click(window, reset)
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1] == ("own", "flux2-klein-4b", None))
+        assert view.tuning["own"] is False and steps.property("text") == "" and seed.property("text") == ""
+        assert not reset.property("visible") and quick.warnings == []
     finally:
         quick.close()
 

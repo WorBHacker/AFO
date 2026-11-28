@@ -1139,6 +1139,75 @@ def test_a_scene_of_five_seconds_with_its_own_steps_and_guidance(hub):
         assert hub.post("/v1/visual/videos", json={"prompt": "a lamp", **wrong}).status_code == 422, wrong
 
 
+def test_a_models_own_settings_draw_and_film_until_as_it_was(hub):
+    """«Стабилизация», portion 5 (the user's complaint 13 of 2026-11-27: no settings for picture and video models): a
+    model's own steps, guidance («сила подсказки»), negative and seed, set in the Studio, are what it draws and films
+    with - the Studio's pictures and a chat's alike (both are `draw`) -, a request's own first («Ещё вариант» - a new
+    seed); a lighter model a picture goes down to keeps its own; «Как было» - as it was installed. Before: the
+    install's steps and guidance always, no negative but the request's, a new seed each time."""
+    _install(hub)
+    _install(hub, "tiny", {**DRAW_PLAN, "set": "tiny", "tier": "light", "flags": ["--steps", "1"]})
+    _install(hub, "clip", CLIP_PLAN)
+    assert hub.put("/v1/visual/models/nothing/own", json={"steps": 9}).status_code == 404
+    for wrong in ({"steps": 0}, {"steps": 61}, {"cfg": 0.5}, {"cfg": 16}, {"seed": -1}, {"negative": "x" * 2001}):
+        assert hub.put("/v1/visual/models/draw/own", json=wrong).status_code == 422, wrong
+    mine = {"steps": 9, "cfg": 3.5, "negative": "blur", "seed": 11}
+    assert hub.put("/v1/visual/models/draw/own", json=mine).json()["own"] == mine
+    listed = hub.get("/v1/visual/models").json()
+    assert [(m["model_id"], m["steps"], m["own"]) for m in listed["models"]] == [("draw", 4, mine), ("tiny", 1, {})]
+
+    job = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
+    assert (job["seed"], job["negative"], job["steps"], job["cfg"]) == (11, "blur", 9, 3.5)
+    assert _wait(hub, job["id"], "done", "failed")["status"] == "done"
+    assert FakeDrawSwap.asked[-1] == {
+        "model": "draw",
+        "prompt": "a fox",
+        "negative_prompt": "blur",
+        "width": 512,
+        "height": 512,
+        "seed": 11,
+        "steps": 9,
+        "cfg_scale": 3.5,
+        "batch_size": 1,
+    }
+    assert visual.parameters(hub.get(f"/v1/visual/jobs/{job['id']}/file").content).startswith(
+        "a fox\nNegative prompt: blur\nSteps: 9, CFG scale: 3.5, Seed: 11, ")  # fmt: skip
+    other = hub.post("/v1/visual/images", json={"prompt": "a fox", "seed": -1, "negative": "rain"}).json()["job"]
+    assert other["seed"] != 11 and other["negative"] == "rain" and other["steps"] == 9
+    _wait(hub, other["id"], "done", "failed")
+
+    assert hub.put("/v1/visual/models/clip/own", json={"steps": 6, "cfg": 2.0}).json()["own"] == {
+        "steps": 6,
+        "cfg": 2.0,
+    }
+    film = hub.post("/v1/visual/videos", json={"prompt": "a lamp turns", "seconds": 1}).json()["job"]
+    assert (film["steps"], film["cfg"]) == (6, 2.0)
+    assert _wait(hub, film["id"], "done", "failed")["status"] == "done"
+    assert FakeDrawSwap.video[-1]["sample_params"]["sample_steps"] == 6
+    assert FakeDrawSwap.video[-1]["sample_params"]["guidance"] == {"txt_cfg": 2.0}
+
+    # «Как было»: as installed - its steps and guidance, no negative, a new seed
+    assert hub.delete("/v1/visual/models/draw/own").json()["own"] == {}
+    assert hub.delete("/v1/visual/models/clip/own").json()["own"] == {}
+    assert [m["own"] for m in hub.get("/v1/visual/models").json()["videos"]] == [{}]
+    back = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
+    assert (back["negative"], back["steps"], back["cfg"]) == ("", None, None)
+    _wait(hub, back["id"], "done", "failed")
+    assert (FakeDrawSwap.asked[-1]["steps"], FakeDrawSwap.asked[-1]["cfg_scale"]) == (4, 1.0)
+    film = hub.post("/v1/visual/videos", json={"prompt": "a lamp turns", "seconds": 1}).json()["job"]
+    _wait(hub, film["id"], "done", "failed")
+    assert FakeDrawSwap.video[-1]["sample_params"]["sample_steps"] == 4
+
+    # a picture gone down to a lighter model: that one's own steps and guidance, not those of the model asked
+    hub.put("/v1/visual/models/draw/own", json={"steps": 9, "cfg": 3.5})
+    FakeDrawSwap.answer = lambda body: "fail" if body["model"] == "draw" else "picture"
+    asked = len(FakeDrawSwap.asked)
+    down = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done", "failed")
+    assert down["status"] == "done" and down["model_id"] == "tiny"
+    assert [(b["model"], b["steps"], b["cfg_scale"]) for b in FakeDrawSwap.asked[asked:]] == [
+        ("draw", 9, 3.5), ("draw", 9, 3.5), ("tiny", 1, 1.0)]  # fmt: skip
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
 def test_a_video_goes_on_from_the_last_frame_of_another(hub, monkeypatch):
     """50.3, for the director's «продолжение»: a video named as another's source (`from_job`) begins with that

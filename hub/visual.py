@@ -304,6 +304,10 @@ MODE_WORDS = {"text": N_("{name} снимает только по картинк
               "picture": N_("{name} не снимает по картинке — только по описанию"),
               "frames": N_("{name} не снимает по двум кадрам — только по первому")}  # fmt: skip
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
+# settings: {model: {steps, cfg, negative, seed}} - a picture or video model's own, set in the Studio («Стабилизация»,
+# portion 5; the user's complaint 13 of 2026-11-27): what is not there - as the model was installed, a new seed
+OWN = "visual.own"
+OWN_KEYS = ("steps", "cfg", "negative", "seed")
 
 
 def trial_frame(width: int, height: int) -> bytes:
@@ -721,6 +725,39 @@ def remember(conn, here: str, rules: dict[str, dict[str, Any]]) -> None:
                  (RUNGS, json.dumps(saved), utc_now()))  # fmt: skip
 
 
+def own_settings(conn) -> dict[str, dict[str, Any]]:
+    """Each picture or video model's own settings (`OWN`): steps, cfg, negative, seed - those set."""
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (OWN,)).fetchone()
+    return json.loads(row["value"]) if row else {}
+
+
+def set_own(conn, model_id: str, values: dict[str, Any] | None) -> dict[str, Any]:
+    """A model's own settings, those not None of `values`; none - as the model was installed («Как было»). What
+    they are now."""
+    saved = own_settings(conn)
+    kept = {k: values[k] for k in OWN_KEYS if values and values.get(k) not in (None, "")}
+    if kept:
+        saved[model_id] = kept
+    else:
+        saved.pop(model_id, None)
+    conn.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET "
+                 "value = excluded.value, updated_at = excluded.updated_at",
+                 (OWN, json.dumps(saved, ensure_ascii=False), utc_now()))  # fmt: skip
+    return kept
+
+
+def tuned(spec: dict[str, Any], mine: dict[str, Any]) -> dict[str, Any]:
+    """What a job is made with: the request's own steps, guidance, negative and seed, else the model's own settings
+    (`mine`), else as the model was installed (steps, cfg None) and a new seed. A seed below 0 - a new one always
+    («Ещё вариант»)."""
+    seed = spec.get("seed")
+    seed = mine.get("seed") if seed is None else seed
+    return {"steps": spec.get("steps") or mine.get("steps"),
+            "cfg": spec.get("cfg") if spec.get("cfg") is not None else mine.get("cfg"),
+            "negative": (spec.get("negative") or "").strip() or str(mine.get("negative") or "").strip(),
+            "seed": random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)}  # fmt: skip
+
+
 def described(prompt: str, negative: str, seed: int, model: dict[str, Any], width: int, height: int,
               strength: float | None = None) -> str:  # fmt: skip
     """A picture's «parameters» as A1111 writes them, when the engine wrote none."""
@@ -810,7 +847,19 @@ class Visual:
             model["pixels"], model["instead"] = int(rule.get("pixels") or 0), rule.get("instead") or ""
         best = default_model(found, machine)
         videos = await self._db.acall(lambda conn: installed(conn, "video"))
+        mine = await self._db.acall(own_settings)
+        for model in [*found, *videos]:  # its own settings (portion 5); steps, cfg - as it was installed
+            model["own"] = mine.get(model["model_id"]) or {}
         return {"models": found, "default": best["model_id"] if best else "", "videos": videos}
+
+    async def set_own(self, model_id: str, values: dict[str, Any] | None) -> dict[str, Any]:
+        """A picture or video model's own settings (`set_own`); VisualError 404 for a model not installed."""
+        known = await self._db.acall(
+            lambda conn: [m["model_id"] for m in [*installed(conn), *installed(conn, "video")]]
+        )
+        if model_id not in known:
+            raise VisualError(tr("нет такой модели картинок или видео: {model}", model=model_id), 404)
+        return await self._db.acall(lambda conn: set_own(conn, model_id, values))
 
     @property
     def holding(self) -> bool:
@@ -851,8 +900,8 @@ class Visual:
         shape = str(spec.get("shape") or "wide") if own else shape_of(*png_size(first))
         width, height = video_size(shape, bool(spec.get("hd")), clip)
         frames = frames_for(float(spec.get("seconds") or 2.0), clip["fps"], clip["step"])
-        seed = spec.get("seed")
-        seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
+        made = tuned(spec, (await self._db.acall(own_settings)).get(model["model_id"]) or {})  # its own (portion 5)
+        seed = made["seed"]
         sound = bool(model["sound"]) and spec.get("sound") is not False
         heard = " ".join(str(spec.get("sound_words") or "").split())[:SOUND_WORDS] if sound else ""
         job_id = uuid.uuid4().hex[:12]
@@ -867,9 +916,9 @@ class Visual:
                 "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
                 "conversation_id, frames, fps, source, last_frame, steps, cfg, sound, sound_words) VALUES (?, "
                 "'video', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
+                (job_id, prompt, made["negative"], model["model_id"], width, height, seed, client,
                  spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", ""),
-                 spec.get("steps"), spec.get("cfg"), int(sound), heard),
+                 made["steps"], made["cfg"], int(sound), heard),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -1119,8 +1168,9 @@ class Visual:
             if not SIZES[0] <= side <= SIZES[1] or side % 16:
                 raise VisualError(tr("сторона картинки — от {low} до {high} точек, кратно 16", low=SIZES[0],
                                      high=SIZES[1]), 422)  # fmt: skip
-        seed = spec.get("seed")
-        seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
+        # its own settings (portion 5) - a block on the processor's are its model's
+        made = tuned(spec, (await self._db.acall(own_settings)).get(model.get("of") or model["model_id"]) or {})
+        seed = made["seed"]
         job_id = uuid.uuid4().hex[:12]
         kept = ""
         if source is not None:  # beside the job: each rung sends it again
@@ -1130,9 +1180,10 @@ class Visual:
         def add(conn) -> None:
             conn.execute(
                 "INSERT INTO visual_jobs (id, prompt, negative, model_id, width, height, seed, status, client, "
-                "conversation_id, source, strength) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
-                (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
-                 spec.get("conversation_id"), kept, strength),
+                "conversation_id, source, strength, steps, cfg) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, "
+                "?)",
+                (job_id, prompt, made["negative"], model["model_id"], width, height, seed, client,
+                 spec.get("conversation_id"), kept, strength, made["steps"], made["cfg"]),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -1545,6 +1596,16 @@ class Visual:
             models = [m for m in models if follows(m)]
         ladder = rungs(model, found["width"], found["height"], models, await self._db.acall(
             lambda conn: remembered(conn, here)))  # fmt: skip
+        mine, asked = await self._db.acall(own_settings), model.get("of") or model["model_id"]
+
+        def made_with(each: dict[str, Any]) -> dict[str, Any]:
+            """A rung's model as it draws (portion 5): the job's steps and guidance for the model asked (its block on
+            the processor too), another's - its own settings; none - as it was installed."""
+            key = each.get("of") or each["model_id"]
+            own = {"steps": found.get("steps"), "cfg": found.get("cfg")} if key == asked else mine.get(key) or {}
+            return {**each, "steps": int(own.get("steps") or each["steps"]),
+                    "cfg": float(own["cfg"]) if own.get("cfg") is not None else each["cfg"]}  # fmt: skip
+
         tries: list[dict[str, Any]] = []
         picture, start = None, time.monotonic()
         for rung in ladder:
@@ -1554,7 +1615,8 @@ class Visual:
                             height=rung["height"], tries=tries)  # fmt: skip
             if job_id in self._stopping:  # ✕ or «Выгрузить» while «running» was written (48.10а): nothing asked for
                 break
-            picture, error, gone, seconds = await self._try(job_id, found, rung, by_id[rung["model_id"]], source)
+            picture, error, gone, seconds = await self._try(job_id, found, rung, made_with(by_id[rung["model_id"]]),
+                                                            source)  # fmt: skip
             if job_id in self._stopping:
                 break
             tries.append({**rung, "ok": picture is not None, "error": error, "seconds": seconds})
@@ -1572,7 +1634,7 @@ class Visual:
             await self._db.acall(lambda conn: remember(conn, here, rules))
         drawn = tries[-1]
         picture = with_parameters(picture, parameters(picture) or described(
-            found["prompt"], found["negative"], found["seed"], by_id[drawn["model_id"]], drawn["width"],
+            found["prompt"], found["negative"], found["seed"], made_with(by_id[drawn["model_id"]]), drawn["width"],
             drawn["height"], found.get("strength") if source is not None else None))  # fmt: skip
         name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
         await asyncio.to_thread(save, self.media / name, picture)

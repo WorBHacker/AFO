@@ -11,7 +11,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -212,6 +212,11 @@ class HubClient:
 
     def visual_draw(self, spec: dict) -> dict:
         return self._call("POST", "/v1/visual/images", spec)
+
+    def visual_own(self, model_id: str, values: dict | None) -> dict:
+        """A picture or video model's own settings; None - as it was installed («Как было»)."""
+        path = f"/v1/visual/models/{quote(model_id, safe='')}/own"
+        return self._call("DELETE", path) if values is None else self._call("PUT", path, values)
 
     def visual_jobs(self, limit: int = 30) -> dict:
         return self._call("GET", "/v1/visual/jobs", params={"limit": limit})

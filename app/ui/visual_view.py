@@ -31,7 +31,7 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
-from common.picture_sizes import CPU_PIXELS, SHAPES, clip_of, fit, size_for, video_size
+from common.picture_sizes import CPU_PIXELS, GUIDANCE, SHAPES, STEPS, clip_of, fit, size_for, video_size
 
 from ..hub_client import HubError
 from .enhance_view import improvement
@@ -55,6 +55,9 @@ VIDEO_MODES = [("text", N_("Описание"), N_("по описанию")), ("
 LENGTHS = [("1", N_("1 с")), ("2", N_("2 с")), ("3", N_("3 с"))]
 STRENGTHS = [("little", N_("Чуть"), 0.3), ("some", N_("Заметно"), 0.6), ("much", N_("Сильно"), 0.85)]
 _TIER = {"fast": ("main", "light", "quality"), "quality": ("quality", "main", "light")}
+TUNING = ("steps", "cfg", "negative", "seed")  # a model's own settings («Стабилизация», portion 5), the hub's OWN_KEYS
+SEEDS = 2**31  # a seed: 0 up to this, not it
+NEGATIVE = 2000  # the hub's longest negative
 
 
 def pick_model(models: list[dict[str, Any]], default: str, quality: str) -> dict[str, Any] | None:
@@ -713,6 +716,80 @@ class VisualView(QObject):
         client = self.app.client
         return client.visual_picture(blob) if client is not None else b""
 
+    # ================= a model's own settings («Стабилизация», portion 5) =================
+
+    def _tuned_model(self) -> dict[str, Any] | None:
+        """The model whose own settings the Studio shows: the video's, or the one the picture is drawn with - its
+        block on the processor is its model's."""
+        if self._mode == "video":
+            return self._video_model()
+        model = self._plan()[0]
+        if model is None:
+            return None
+        return next((m for m in self._models if m["model_id"] == model["model_id"]
+                     or (m.get("cpu_id") and m["cpu_id"] == model["model_id"])), None)  # fmt: skip
+
+    @Property("QVariantMap", notify=changed)
+    def tuning(self) -> dict:
+        """«Настройки модели»: its own steps, guidance («сила подсказки»), negative and seed as text - "" for those
+        not set; beside them what it was installed with; `own` - whether any is set («Как было» then)."""
+        model = self._tuned_model()
+        if model is None:
+            return {}
+        own = model.get("own") or {}
+        return {"model": model["model_id"], "name": model["name"], "own": bool(own),
+                "steps": str(own.get("steps") or ""), "cfg": f"{own['cfg']:g}" if own.get("cfg") is not None else "",
+                "negative": str(own.get("negative") or ""),
+                "seed": str(own["seed"]) if own.get("seed") is not None else "",
+                "stepsHint": str(model.get("steps") or ""),
+                "cfgHint": f"{float(model.get('cfg') or 1.0):g}"}  # fmt: skip
+
+    @Slot(str, str)
+    def setTuning(self, key: str, text: str) -> None:
+        """One of the model's own settings, as typed: "" - as it was installed (the seed: a new one each time); one
+        that will not do - said, and the one kept shown again."""
+        model = self._tuned_model()
+        if model is None or key not in TUNING:
+            return
+        own, text = dict(model.get("own") or {}), text.strip()
+        try:
+            value = _tuning_value(key, text) if text else None
+        except ValueError as exc:
+            self.app.flash(str(exc), error=True, ms=4000)
+            self.changed.emit()
+            return
+        if value is None:
+            own.pop(key, None)
+        else:
+            own[key] = value
+        if own != (model.get("own") or {}):
+            self._save_own(model, own)
+
+    @Slot()
+    def resetTuning(self) -> None:
+        """«Как было»: the model as it was installed."""
+        model = self._tuned_model()
+        if model is not None and model.get("own"):
+            self._save_own(model, {})
+
+    def _save_own(self, model: dict[str, Any], own: dict[str, Any]) -> None:
+        """To the hub; shown at once - and, not taken, the hub's again."""
+        before, model["own"] = model.get("own") or {}, own
+        self.changed.emit()
+        model_id = model["model_id"]
+
+        def saved(result: dict[str, Any]) -> None:
+            model["own"] = result.get("own") or {}
+            self.changed.emit()
+
+        def failed(error: Exception) -> None:
+            model["own"] = before
+            self.app.show_error(tr("Настройки модели не сохранены: {error}", error=error))
+            self.changed.emit()
+
+        values = {k: own.get(k) for k in TUNING} | {"negative": own.get("negative") or ""} if own else None
+        self.app._call(lambda: self.app.client.visual_own(model_id, values), saved, failed)
+
     # ================= loading =================
 
     @Slot(str)
@@ -824,14 +901,15 @@ class VisualView(QObject):
 
     @Slot()
     def draw(self) -> None:
-        self._start(seed=-1)
+        """«Нарисовать» / «Снять видео»: the seed - the model's own, or a new one (the hub's, portion 5)."""
+        self._start(seed=None)
 
     @Slot()
     def again(self) -> None:
         """«Ещё вариант»: the same description, a new seed."""
         self._start(seed=-1)
 
-    def _start(self, *, seed: int) -> None:
+    def _start(self, *, seed: int | None) -> None:
         if self._mode == "video":
             self._film(seed=seed)
             return
@@ -886,7 +964,7 @@ class VisualView(QObject):
         else:
             self._recent[at] = job
 
-    def _film(self, *, seed: int) -> None:
+    def _film(self, *, seed: int | None) -> None:
         """A video (29.8б): the description, the shape, how long, «Качественнее» - the family's larger size; (48.7б)
         its model as chosen, by a picture - the first frame as «По картинке» takes one - and by two frames."""
         model = self._video_model()
@@ -1128,3 +1206,22 @@ class VisualView(QObject):
         if job["status"] == "done" and job.get("kind") != "video":
             self._fetch(job["id"])
         self.changed.emit()
+
+
+def _tuning_value(key: str, text: str) -> int | float | str:
+    """A model's own setting from what was typed; ValueError with words for one that will not do."""
+    if key == "negative":
+        return text[:NEGATIVE]
+    if key == "cfg":
+        try:
+            value = float(text.replace(",", "."))
+        except ValueError:
+            value = 0.0
+        if not GUIDANCE[0] <= value <= GUIDANCE[1]:
+            raise ValueError(tr("Сила подсказки — число от {low:g} до {high:g}", low=GUIDANCE[0], high=GUIDANCE[1]))
+        return round(value, 2)
+    low, high = (STEPS[0], STEPS[1]) if key == "steps" else (0, SEEDS - 1)
+    if not re.fullmatch(r"\d{1,10}", text) or not low <= int(text) <= high:
+        raise ValueError(tr("Шаги — целое число от {low} до {high}", low=low, high=high) if key == "steps" else tr(
+            "Зерно — целое число от 0 до {high}", high=high))  # fmt: skip
+    return int(text)
