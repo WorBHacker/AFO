@@ -773,7 +773,8 @@ def folded(history: list[MessageRow], start: int, upto: int, numbers: dict[int, 
     """The request's history with the goal's turns before `upto` folded: the contract (the goal's first note) stays,
     then the context layers no later message replaced (one system message), then the turns as one message of lines
     (`FOLDED`, the stages done in it as they were); the turn `upto` falls in keeps its messages, its tool results
-    before `upto` as a one-line note («Стабилизация» 2026-11-27: the user's word - compact before the chat is full,
+    before `upto` and the long arguments of their calls as a one-line note (`_called`; «Стабилизация» 2026-11-27: the
+    user's word - compact before the chat is full,
     and what is done two steps back goes from the context). `numbers`: the turns' numbers (`turn_numbers`) - where
     stages are folded, fewer notes are left. The stored conversation stays whole (D14)."""
     if not upto:
@@ -803,9 +804,13 @@ def folded(history: list[MessageRow], start: int, upto: int, numbers: dict[int, 
         first = next(row for row in inside if row.role != "system")
         out.append(MessageRow(0, first.seq, "assistant", None, [{"type": "text", "text": "\n".join([FOLDED, *lines])}],
                               first.created_at))  # fmt: skip
+    done = {b.get("id") for row in after if row.role == "tool" and row.seq < upto for b in row.content}
     for row in after:
         if row.role == "tool" and row.seq < upto:
             row = dataclasses.replace(row, content=[_noted(b) for b in row.content])
+        elif row.role == "assistant" and row.seq < upto and (content := [_called(b, done) for b in row.content]
+                                                             ) != row.content:  # fmt: skip
+            row = dataclasses.replace(row, content=content, provider_raw=None)  # its raw blocks would bring it back
         out.append(row)
     return out
 
@@ -815,6 +820,21 @@ def _noted(block: dict[str, Any]) -> dict[str, Any]:
     if block.get("type") != "tool_result" or not isinstance(text, str) or len(text) <= fit.TOOL_MIN:
         return block
     return {**block, "output": fit.STUB.format(name=block.get("name") or "инструмент", chars=len(text))}  # i18n: keep
+
+
+CALL_FOLDED = "[folded by the hub: {chars} characters - this call is done; what it wrote is on disk, read it if needed]"
+
+
+def _called(block: dict[str, Any], done: set) -> dict[str, Any]:
+    """A call of a long turn whose result is folded: its long arguments - the text a write_file wrote, an edit's
+    strings - as a note too (portion 5 of «Стабилизация», a live goal on a 16K window, 2026-11-28: six files of 3 KB
+    in one turn kept the window 93 % full, folds or not)."""
+    args = block.get("input")
+    if block.get("type") != "tool_call" or block.get("id") not in done or not isinstance(args, dict):
+        return block
+    shorter = {k: CALL_FOLDED.format(chars=len(v)) if isinstance(v, str) and len(v) > fit.TOOL_MIN else v
+               for k, v in args.items()}  # fmt: skip
+    return block if shorter == args else {**block, "input": shorter}
 
 
 def _turn_lines(rows: list[MessageRow], numbers: dict[int, int]) -> list[str]:

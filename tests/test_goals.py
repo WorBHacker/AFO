@@ -352,6 +352,30 @@ def test_a_goals_old_turns_fold_before_its_window_fills(hub, repo):  # noqa: F81
     assert paths == ["part1.txt", "part2.txt", "part3.txt", "part4.txt", "part5.txt", "done.txt"]  # D14
 
 
+def test_a_long_turn_folds_the_text_its_old_calls_wrote(hub, repo):  # noqa: F811
+    """«Стабилизация», portion 5, a live goal on Qwen3-VL 8B with a 16K window (2026-11-28): six files of 3 KB written
+    in one turn - each fold was followed by 72, 87, 93 % of the room, because the old results were notes but the calls
+    still carried the whole text they wrote. Now a call whose result is folded keeps its short arguments (the path)
+    and a note for the long ones; the last calls stay whole, and the stored conversation keeps it all (D14)."""
+    body = "y" * 3000
+    script = [[("write_file", {"project": "proj", "path": f"data{k}.py", "content": body})] for k in range(1, 9)]
+    worker = use(hub, Windowed("agent", [*script, WRITE, "Готово."], 16384))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, criteria=[{"command": DONE}])
+    done = settled(hub, conv, "achieved", "blocked")
+    assert done["goal"]["status"] == "achieved" and done["goal"]["turns_used"] == 1
+    last = worker.prompts[-1]  # the turn's last request
+    calls = [c["input"] for m in last for c in m.get("tool_calls") or []]
+    assert [c["path"] for c in calls] == [f"data{k}.py" for k in range(1, 9)] + ["done.txt"]
+    whole = [c["path"] for c in calls if c["content"] in (body, "ok\n")]
+    assert "done.txt" in whole and "data1.py" not in whole and "data2.py" not in whole, whole  # folds only move on
+    assert all(c["content"] == goals.CALL_FOLDED.format(chars=3000) for c in calls if c["path"] not in whole)
+    assert fit.estimate(last) < fit.room(16384) * goals.FOLD_AT
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    written = [b["input"]["content"] for m in stored for b in m["content"] if b.get("type") == "tool_call"]
+    assert written == [body] * 8 + ["ok\n"]
+
+
 def test_folding_keeps_the_layers_no_later_one_replaced_and_notes_old_results_in_a_long_turn():
     """`folded`: of the context messages in the folded turns only the layers no later message replaced stay, as one
     system message; what the user added and a command's exit code are in the turn's line; a turn too long by itself
