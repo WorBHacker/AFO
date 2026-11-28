@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import sandbox, store
+from .. import links, sandbox, store
 from ..auth import APP_CLIENT, Client
 from ..chat import DEFAULT_EFFORT, BudgetReached, _attached
 from ..gateway import GatewayError
@@ -90,7 +90,7 @@ async def get_conversation(
             title,
             messages,
             store.conversation_projects(conn, conversation_id),
-            store.context_settings(conn, conversation_id),
+            with_map(conn, conversation_id, store.context_settings(conn, conversation_id)),
             store.context_fill(conn, conversation_id),
         )
 
@@ -122,13 +122,23 @@ class ContextSettings(BaseModel):
     instructions: str | None = None  # the chat's own system prompt (D39)
     preset: Literal["", "precise", "balanced", "creative"] | None = None  # over the model's parameters
     refusal_vector: Literal["", "on", "off"] | None = None  # Strata's refusal vector for this chat; '' - as the model
+    map_projects: list[str] | None = None  # the projects of its map, ticked by the user («Стабилизация», portion 5)
+    map_default: bool = False  # the map's projects as by default again: the chat's own and those linked to them
+
+
+def with_map(conn, conversation_id: str, settings: dict) -> dict:
+    """A chat's context settings with its map as it is now (`map_shown`: the projects on it; `map_chosen`: the user
+    ticked them - else the chat's own projects and those linked to them, `links.chat_map`)."""
+    shown, chosen = links.chat_map(conn, conversation_id)
+    return {**settings, "map_shown": shown, "map_chosen": chosen}
 
 
 @router.put("/conversations/{conversation_id}/context")
 async def set_context(
     conversation_id: str, body: ContextSettings, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
-    """What the chat's context includes from its next message on (D22): the map, the live state, pinned files."""
+    """What the chat's context includes from its next message on (D22): the map and its projects, the live state,
+    pinned files."""
     if client.name != APP_CLIENT:
         raise HTTPException(status_code=403, detail="only the desktop app may change a chat's context")
     pinned = [p.model_dump() for p in body.pinned] if body.pinned is not None else None
@@ -136,9 +146,11 @@ async def set_context(
     def write(conn):
         if store.get_title(conn, conversation_id) is None:
             return None
-        return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned,
-                                          mode=body.mode, instructions=body.instructions, preset=body.preset,
-                                          refusal_vector=body.refusal_vector)  # fmt: skip
+        settings = store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned,
+                                              mode=body.mode, instructions=body.instructions, preset=body.preset,
+                                              refusal_vector=body.refusal_vector, map_projects=body.map_projects,
+                                              map_default=body.map_default)  # fmt: skip
+        return with_map(conn, conversation_id, settings)
 
     settings = await request.app.state.db.acall(write)
     if settings is None:

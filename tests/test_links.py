@@ -258,6 +258,62 @@ def test_links_api_and_a_linked_projects_state(pair):
         assert keys.index(next(k for k in keys if k.startswith("linked_project:"))) < keys.index(f"live:{front}")
 
 
+def test_a_chats_map_holds_its_projects_and_the_linked_ones_or_those_the_user_ticked(pair, tmp_path):
+    """«Стабилизация», portion 5 (the user's complaint 3 of 2026-11-27: the map named every project of AFO, those of
+    nothing to the chat too): by default a chat's map holds its own projects and those a confirmed link joins to them
+    - an old chat's too (no choice stored); the user ticks others or unticks, from the next message on; «Как по
+    умолчанию» forgets the ticks; none ticked - no map."""
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "README.md").write_text("Не про этот чат.\n", encoding="utf-8")
+    app = create_app(
+        HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0, process_interval_s=0)
+    )
+    with TestClient(app, base_url="http://127.0.0.1:8765") as hub:
+        hub.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        front = hub.post("/v1/projects", json={"path": pair[0].path}).json()["id"]
+        back = hub.post("/v1/projects", json={"path": pair[1].path}).json()["id"]
+        aside = hub.post("/v1/projects", json={"path": str(other)}).json()["id"]
+        uses = next(x for x in hub.post("/v1/links/scan").json()["links"] if x["kind"] == "uses")
+        hub.put(f"/v1/links/{uses['id']}", json={"status": "confirmed"})
+        app.state.gateway.register(Echo())
+        hub.portal.call(app.state.gateway.sync_catalog)
+        conv = hub.post("/v1/conversations", json={}).json()["id"]
+        hub.put(f"/v1/conversations/{conv}/projects", json={"project_ids": [front]})
+
+        def the_map(text):
+            hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})
+            for _ in range(300):
+                messages = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+                if messages[-1]["role"] == "assistant" and any(m["content"] == [{"type": "text", "text": text}]
+                                                               for m in messages if m["role"] == "user"):  # fmt: skip
+                    break
+                hub.portal.call(asyncio.sleep, 0.02)
+            layers = [b for m in messages if m["role"] == "system" for b in m["content"]]
+            return next((b["text"] for b in reversed(layers) if b["key"] == "map"), "")
+
+        shown = hub.get(f"/v1/conversations/{conv}").json()["context"]
+        assert shown["map_projects"] is None and shown["map_chosen"] is False
+        assert sorted(shown["map_shown"]) == sorted([front, back])
+        first = the_map("раз")
+        assert "- front" in first and "- back" in first and "- other" not in first, first
+        assert first.startswith(context.MAP_HEAD)
+        ticked = hub.put(f"/v1/conversations/{conv}/context", json={"map_projects": [front, aside, "gone"]}).json()
+        assert ticked["map_shown"] == [front, aside] and ticked["map_chosen"] is True
+        second = the_map("два")
+        assert "- other" in second and "- back" not in second, second
+        assert hub.put(f"/v1/conversations/{conv}/context", json={"map_projects": []}).json()["map_shown"] == []
+
+        def contexts():
+            return sum(m["role"] == "system" for m in hub.get(f"/v1/conversations/{conv}").json()["messages"])
+
+        before = contexts()
+        assert the_map("три") == second and contexts() == before + 1  # a context of its own, no new map: none ticked
+        again = hub.put(f"/v1/conversations/{conv}/context", json={"map_default": True}).json()
+        assert again["map_projects"] is None and sorted(again["map_shown"]) == sorted([front, back])
+        assert "- back" in the_map("четыре")
+
+
 def test_a_linked_project_in_brief(pair):
     back = pair[1]
     long_card = "## Назначение\n" + "API для фронта. " * 2000

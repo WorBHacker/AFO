@@ -393,6 +393,28 @@ def delete_link(conn: sqlite3.Connection, link_id: int) -> bool:
     return bool(conn.execute("DELETE FROM project_links WHERE id = ?", (link_id,)).rowcount)
 
 
+def linked_to(ids: set[str], links: list[dict[str, Any]]) -> list[str]:
+    """Projects with a confirmed link to one of `ids`, themselves not of them (D25)."""
+    return sorted(
+        {link["b_id"] if link["a_id"] in ids else link["a_id"] for link in links
+         if link["status"] == "confirmed" and (link["a_id"] in ids) != (link["b_id"] in ids)}
+    )  # fmt: skip
+
+
+def chat_map(conn: sqlite3.Connection, conversation_id: str) -> tuple[list[str], bool]:
+    """The projects of a chat's map and whether the user ticked them («Стабилизация», portion 5; the user's complaint
+    3 of 2026-11-27: the map held every project of AFO, those of nothing to the chat too): by default the chat's own
+    projects and those a confirmed link joins to them - an old chat's as well."""
+    from . import store
+
+    known = {r["id"] for r in conn.execute("SELECT id FROM projects").fetchall()}
+    chosen = store.context_settings(conn, conversation_id)["map_projects"]
+    if chosen is not None:
+        return [p for p in chosen if p in known], True
+    own = set(store.conversation_projects(conn, conversation_id))
+    return sorted((own | set(linked_to(own, list_links(conn)))) & known), False
+
+
 def map_lines(links: list[dict[str, Any]], names: dict[str, str]) -> list[str]:
     """Confirmed links for the ecosystem map (L0): 'frontend -> backend: uses (REST /api, port 8000)'."""
     out = []

@@ -738,6 +738,59 @@ class Controller(QObject):
         ]
         return {**self._context_settings, "pinned": pinned}
 
+    @Property(list, notify=contextChanged)
+    def contextMapRows(self) -> list:
+        """The projects that may be on this chat's map, ticked when they are («Стабилизация», portion 5): the chat's
+        own first, then the rest by name - a row stays where it is when it is ticked."""
+        own = set(self._chat_projects)
+        shown = self._context_settings.get("map_shown")
+        shown = set(own if shown is None else shown)
+        chosen = bool(self._context_settings.get("map_chosen"))
+
+        def note(pid: str) -> str:
+            if pid in own:
+                return tr("проект чата")
+            return tr("связан с проектом чата") if pid in shown and not chosen else ""
+
+        rows = [{"id": p["id"], "name": p["name"], "on": p["id"] in shown, "note": note(p["id"])}
+                for p in self.projects.items]  # fmt: skip
+        return sorted(rows, key=lambda r: (r["id"] not in own, r["name"].casefold()))
+
+    @Slot(str)
+    def toggleMapProject(self, project_id: str) -> None:
+        """A project on or off this chat's map, from its next message on; the ticks are the user's from then on."""
+        shown = [r["id"] for r in self.contextMapRows if r["on"]]
+        self._save_map([p for p in shown if p != project_id] if project_id in shown else [*shown, project_id])
+
+    @Slot()
+    def resetMapProjects(self) -> None:
+        """The map as by default again: the chat's own projects and those linked to them."""
+        self._save_map(None)
+
+    def _save_map(self, shown: list[str] | None) -> None:
+        """The map's projects: `shown` - ticked by the user, None - as by default. The window shows the ticks at once;
+        the hub's answer brings the map as it is (by default - with the linked projects), unless a later tick went
+        out after it."""
+        cid = self.current
+        if not cid or self.client is None:
+            return
+        mine = {"map_projects": shown, "map_chosen": shown is not None} | (
+            {"map_shown": shown} if shown is not None else {})  # fmt: skip
+        self._context_settings = {**self._context_settings, **mine}
+        self.contextChanged.emit()
+        self._context_sent += 1
+        sent = self._context_sent
+        self._context_latest["map_shown"] = sent
+        fields = {"map_projects": shown} if shown is not None else {"map_default": True}
+
+        def done(settings: dict[str, Any]) -> None:
+            if cid == self.current and self._context_latest.get("map_shown") == sent:
+                kept = ("map_projects", "map_shown", "map_chosen")
+                self._context_settings = {**self._context_settings, **{k: settings[k] for k in kept if k in settings}}
+                self.contextChanged.emit()
+
+        self._call(lambda: self.client.set_context(cid, **fields), done)
+
     @Property(list, notify=chatProjectsChanged)
     def chatProjectChoices(self) -> list:
         attached = set(self._chat_projects)
@@ -1197,10 +1250,11 @@ class Controller(QObject):
         """The open chat's projects; `push` tells the hub (a chat not made yet takes them with its first message)."""
         self._chat_projects = list(ids)
         self.chatProjectsChanged.emit()
+        self.contextChanged.emit()  # the map's projects by default follow the chat's
         self.load_advice()
         if push and self.current and self.client is not None:
             cid, wanted = self.current, list(ids)
-            self._call(lambda: self.client.set_chat_projects(cid, wanted))
+            self._call(lambda: self.client.set_chat_projects(cid, wanted), lambda _attached: self.loadContext())
 
     def _set_context(self, messages: list[dict[str, Any]], settings: dict[str, Any] | None) -> None:
         self._context_messages = [m for m in messages if m["role"] == "system"]

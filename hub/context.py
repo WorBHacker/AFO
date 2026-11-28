@@ -97,8 +97,13 @@ def stack_of(root) -> list[str]:
     return found
 
 
+# the map holds the chat's own projects and those linked to them, or the ones the user ticked («Стабилизация»,
+# portion 5) - not every project of AFO
+MAP_HEAD = "Projects on this computer that concern this chat (the ecosystem map):"
+
+
 def map_layer(all_projects: list[Project], links: list[dict[str, Any]] | None = None) -> str:
-    lines = ["Projects on this computer (the ecosystem map):"]
+    lines = [MAP_HEAD]
     for p in sorted(all_projects, key=lambda p: p.name.casefold()):
         stack = ", ".join(stack_of(p.root)) if p.root.is_dir() else "folder missing"
         where = "" if p.cloud_ok else " [local-only]"
@@ -317,13 +322,13 @@ def context_blocks(
     linked: dict[str, tuple[Project, str]] | None = None,
     linked_cards: dict[str, tuple[Project, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
-    conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
-    chat's settings may leave out the map or the live state."""
+    """The blocks of a new context message: the map (of `all_projects` - those of the chat's map), the projects and
+    pinned files when they differ from what the conversation already holds (`previous`: block key -> digest), the
+    live state, and the note on tools. The chat's settings may leave out the map or the live state."""
     settings = settings or {"map": True, "live": True}
     blocks: list[dict[str, Any]] = [{"type": "context", "key": "header", "text": HEADER, "cloud_ok": True}]
     the_map = map_layer(all_projects, links)
-    if settings.get("map", True) and previous.get("map") != digest(the_map):
+    if settings.get("map", True) and all_projects and previous.get("map") != digest(the_map):
         blocks.append({"type": "context", "key": "map", "text": the_map, "digest": digest(the_map),
                        "cloud_text": map_layer_for_cloud(all_projects, links), "cloud_ok": True})  # fmt: skip
     for p in attached:
@@ -364,7 +369,7 @@ def context_blocks(
 
 def map_layer_for_cloud(all_projects: list[Project], links: list[dict[str, Any]] | None = None) -> str:
     """The map as a cloud model may see it: a local-only project by name only."""
-    lines = ["Projects on this computer (the ecosystem map):"]
+    lines = [MAP_HEAD]
     for p in sorted(all_projects, key=lambda p: p.name.casefold()):
         if p.cloud_ok:
             stack = ", ".join(stack_of(p.root)) if p.root.is_dir() else ""

@@ -357,6 +357,7 @@ class FakeClient:
         self.symbol_calls = []
         self.log = []
         self.histories = {"ct": TOOL_HISTORY}
+        self.map_by_default = ["p1"]  # a chat's map with no ticks: its own projects and those linked to them
         self.note_list = []
         self.link_list = []
         self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
@@ -1321,7 +1322,12 @@ class FakeClient:
 
     def set_context(self, cid, **settings):
         self.log.append(("context", cid, settings))
-        return {"map": True, "live": True, "pinned": [], **settings}
+        out = {"map": True, "live": True, "pinned": [], **settings}
+        if "map_projects" in settings:  # the map's projects as the hub says them back («Стабилизация», portion 5)
+            out |= {"map_shown": settings["map_projects"], "map_chosen": True}
+        if settings.get("map_default"):
+            out |= {"map_projects": None, "map_shown": list(self.map_by_default), "map_chosen": False}
+        return out
 
     def set_chat_projects(self, cid, project_ids):
         self.log.append(("projects", cid, list(project_ids)))
@@ -4071,6 +4077,60 @@ def test_the_context_inspector(app):
     app.newChat()
     app.pinFile("p1", "x.py")  # no chat yet: nothing to pin to
     assert app.flashError and app.contextBlocks == []
+
+
+def test_the_maps_projects_are_ticked_in_the_context_sheet(qapp):
+    """«Стабилизация», portion 5 (the user's complaint 3 of 2026-11-27: «нужно сделать так, чтобы пользователь сам
+    выбрал касаемые проекты»): «Контекст чата» lists every project with a tick - by default the chat's own and those
+    linked to them, as the hub says, the chat's own first; a click on a project ticks it (the hub gets the whole list:
+    the ticks are the user's from then on), «Как по умолчанию» forgets them. The map's switch is «Карта проектов»."""
+    from PySide6.QtCore import QMetaObject, QObject
+    from PySide6.QtQuick import QQuickItem
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.project_list += [{"id": "p2", "name": "Бэкенд", "path": "D:/back", "exists": True},
+                                {"id": "p3", "name": "Архив", "path": "D:/old", "exists": True}]  # fmt: skip
+        client.map_by_default = ["p1", "p2"]
+        client.histories["ct"] = {**TOOL_HISTORY, "context": {
+            "map": True, "live": True, "pinned": [], "mode": "ask", "map_projects": None, "map_shown": ["p1", "p2"],
+            "map_chosen": False}}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and len(app.projects.items) == 3)
+        app.openChat("ct")
+        wait_until(lambda: not app.bg.busy and app.currentId == "ct" and app.contextSettings.get("map_shown"))
+        sheet = quick.window.findChild(QObject, "contextSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        assert quick.window.findChild(QQuickItem, "contextMap").property("text") == "Карта проектов"
+        assert [(r["name"], r["on"], r["note"]) for r in app.contextMapRows] == [
+            ("LocalChat", True, "проект чата"),
+            ("Архив", False, ""),
+            ("Бэкенд", True, "связан с проектом чата"),
+        ]
+        reset = quick.window.findChild(QQuickItem, "mapDefault")
+        column = quick.window.findChild(QQuickItem, "contextMapProjects")
+        assert column.isVisible() and not reset.isVisible()
+
+        def tick(name):  # a Repeater's row: among the column's items, not the window's children
+            return next(c for c in column.childItems() if c.objectName() == f"mapProject_{name}")
+
+        click(quick.window, tick("Архив"))
+        wait_until(lambda: ("context", "ct", {"map_projects": ["p1", "p2", "p3"]}) in client.log and not app.bg.busy)
+        assert [r["on"] for r in app.contextMapRows] == [True, True, True] and app.contextSettings["map_chosen"]
+        assert [r["note"] for r in app.contextMapRows] == ["проект чата", "", ""]  # ticked: «linked» is not said
+        wait_until(lambda: reset.isVisible())
+        click(quick.window, tick("Бэкенд"))
+        wait_until(lambda: ("context", "ct", {"map_projects": ["p1", "p3"]}) in client.log and not app.bg.busy)
+        click(quick.window, reset)
+        wait_until(lambda: ("context", "ct", {"map_default": True}) in client.log and not app.bg.busy)
+        assert not app.contextSettings["map_chosen"] and [r["on"] for r in app.contextMapRows] == [True, False, True]
+    finally:
+        quick.close()
 
 
 def test_project_cards(app):

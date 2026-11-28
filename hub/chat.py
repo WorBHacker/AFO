@@ -851,11 +851,12 @@ class ChatService:
             confirmed = {pid: cards.confirmed_text(conn, pid) for pid in [*ids, *_linked_ids(set(ids), all_links)]}
             written = {p.id: notes.list_notes(conn, p.id) for p in attached}
             return (history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed,
-                    written, all_links)  # fmt: skip
+                    written, all_links, links.chat_map(conn, conversation_id)[0])  # fmt: skip
 
-        history, everything, events, settings, confirmed, written, all_links = await self._db.acall(gather)
+        history, everything, events, settings, confirmed, written, all_links, on_map = await self._db.acall(gather)
         ids = {p.id for p in attached}
         by_id = {p.id: p for p in everything}
+        mapped = [by_id[pid] for pid in on_map if pid in by_id]  # the map's projects, not all of AFO's (portion 5)
         linked_ids = _linked_ids(ids, all_links)
         project_notes = {p.id: clean(notes.notes_layer(p.name, written[p.id])) for p in attached if written[p.id]}
         project_cards = {
@@ -903,7 +904,7 @@ class ChatService:
         files = {key: (p, await asyncio.to_thread(context.pinned_file, p, path)) for key, (p, path) in pinned.items()}
         blocks = await asyncio.to_thread(
             lambda: context.context_blocks(
-                all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
+                all_projects=mapped, attached=attached, previous=context.previous_digests(history), live=live,
                 settings=settings, pinned=files, cards=project_cards, notes=project_notes, links=all_links,
                 linked=linked, linked_cards=linked_cards,
             )
@@ -1916,10 +1917,7 @@ def _attached(conn, conversation_id: str) -> list:
 
 def _linked_ids(ids: set[str], all_links: list[dict[str, Any]]) -> list[str]:
     """Projects with a confirmed link to an attached one, themselves not attached (D25)."""
-    return sorted(
-        {link["b_id"] if link["a_id"] in ids else link["a_id"] for link in all_links
-         if link["status"] == "confirmed" and (link["a_id"] in ids) != (link["b_id"] in ids)}
-    )  # fmt: skip
+    return links.linked_to(ids, all_links)
 
 
 def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: Path | None = None

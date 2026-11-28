@@ -29,12 +29,56 @@ Sheet {
         font.weight: Font.DemiBold
     }
 
+    // a project on or off the map: a tick, its name, what it is to the chat
+    component MapTick: AbstractButton {
+        id: tick
+        property bool on: false
+        property string note: ""
+        width: parent ? parent.width : implicitWidth
+        implicitHeight: 28
+        hoverEnabled: true
+        background: Rectangle { radius: 4; color: tick.hovered ? Theme.p.item_hover : "transparent" }
+        contentItem: Item {
+            Rectangle {
+                id: box
+                x: 4
+                width: 16
+                height: 16
+                radius: 4
+                anchors.verticalCenter: parent.verticalCenter
+                color: tick.on ? Theme.p.accent : "transparent"
+                border.color: tick.on ? Theme.p.accent : Theme.p.hairline_strong
+                Icon { anchors.centerIn: parent; visible: tick.on; name: "check"; size: 12; tint: Theme.p.on_accent }
+            }
+            Text {
+                id: tickName
+                x: 30
+                width: Math.max(0, Math.min(implicitWidth, parent.width - x - tickNote.implicitWidth - 12))
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+                text: tick.text
+                color: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
+            Text {
+                id: tickNote
+                x: tickName.x + tickName.width + 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: tick.note
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
+    }
+
     SectionTitle { text: qsTr("Что идёт со следующими сообщениями") }
     Row {
         spacing: 8
         OnOff {
             objectName: "contextMap"
-            text: qsTr("Карта всех проектов")
+            text: qsTr("Карта проектов")
             checked: !!App.contextSettings.map
             onToggled: App.setContextLayer("map", checked)
         }
@@ -43,6 +87,40 @@ Sheet {
             text: qsTr("Что происходит сейчас")
             checked: !!App.contextSettings.live
             onToggled: App.setContextLayer("live", checked)
+        }
+    }
+    // which projects the map tells the model of («Стабилизация», portion 5: not every project of AFO)
+    Column {
+        objectName: "contextMapProjects"
+        visible: !!App.contextSettings.map && App.contextMapRows.length > 0
+        width: parent.width
+        spacing: 2
+        Text {
+            width: parent.width
+            wrapMode: Text.Wrap
+            lineHeight: 1.3
+            text: App.contextSettings.map_chosen ? qsTr("На карте — проекты, которые вы отметили.")
+                  : qsTr("На карте — проекты этого чата и связанные с ними. Отметьте другие, если они касаются чата.")
+            color: Theme.p.muted
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+        }
+        Repeater {
+            model: App.contextMapRows
+            delegate: MapTick {
+                required property var modelData
+                objectName: "mapProject_" + modelData.name
+                on: modelData.on
+                text: modelData.name
+                note: modelData.note
+                onClicked: App.toggleMapProject(modelData.id)
+            }
+        }
+        PlainButton {
+            objectName: "mapDefault"
+            visible: !!App.contextSettings.map_chosen
+            text: qsTr("Как по умолчанию")
+            onClicked: App.resetMapProjects()
         }
     }
 

@@ -212,7 +212,8 @@ def conversation_tools(
     return chosen
 
 
-CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": "", "refusal_vector": ""}
+CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": "", "refusal_vector": "",
+                    "map_projects": None}  # fmt: skip
 VECTOR_WORDS = {None: "", 1: "on", 0: "off"}  # a chat's Strata refusal vector: '' - as the model is set
 MAX_PINNED = 10
 MODES = ("read_only", "ask", "sandbox", "trusted")  # a chat's rights (D17); sandbox: a git worktree (9.4b)
@@ -221,17 +222,25 @@ MODES = ("read_only", "ask", "sandbox", "trusted")  # a chat's rights (D17); san
 def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
     """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]; its rights
     mode (D17): read_only, ask (the default) or trusted; its own instructions and preset of the answer's parameters
-    (D39, '' - as the model has them); Strata's refusal vector for it ('' / on / off, 2026-10-28)."""
+    (D39, '' - as the model has them); Strata's refusal vector for it ('' / on / off, 2026-10-28); the projects of its
+    map the user ticked (None - as by default: `links.chat_map`; «Стабилизация», portion 5)."""
     row = conn.execute("SELECT * FROM conversation_context WHERE conversation_id = ?", (conversation_id,)).fetchone()
     if row is None:
         return {**CONTEXT_DEFAULTS, "pinned": [], "mode": "ask"}
     return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"]),
             "mode": row["mode"], "instructions": row["instructions"], "preset": row["preset"],
-            "refusal_vector": VECTOR_WORDS.get(row["refusal_vector"], "")}  # fmt: skip
+            "refusal_vector": VECTOR_WORDS.get(row["refusal_vector"], ""),
+            "map_projects": json.loads(row["map_projects"]) if row["map_projects"] is not None else None}  # fmt: skip
 
 
-def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **changes: Any) -> dict[str, Any]:
+def set_context_settings(conn: sqlite3.Connection, conversation_id: str, *, map_default: bool = False,
+                         **changes: Any) -> dict[str, Any]:  # fmt: skip
+    """`map_default`: the map's projects as by default again (its ticks forgotten)."""
     settings = {**context_settings(conn, conversation_id), **{k: v for k, v in changes.items() if v is not None}}
+    if map_default:
+        settings["map_projects"] = None
+    elif settings["map_projects"] is not None:
+        settings["map_projects"] = list(dict.fromkeys(str(p) for p in settings["map_projects"]))
     pinned = []
     for item in settings["pinned"]:
         entry = {"project_id": str(item["project_id"]), "path": str(item["path"]).replace("\\", "/").strip("/")}
@@ -246,13 +255,15 @@ def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **chang
         raise ValueError(f"unknown refusal vector choice {settings['refusal_vector']!r}: '', on or off")
     settings["instructions"] = str(settings["instructions"]).strip()[: model_settings.SYSTEM_PROMPT_MAX]
     vector = {"": None, "on": 1, "off": 0}[settings["refusal_vector"]]
+    chosen = json.dumps(settings["map_projects"]) if settings["map_projects"] is not None else None
     conn.execute(
         "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode, instructions, preset,"
-        " refusal_vector) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (conversation_id) DO UPDATE SET"
+        " refusal_vector, map_projects) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (conversation_id) DO UPDATE SET"
         " map = excluded.map, live = excluded.live, pinned = excluded.pinned, mode = excluded.mode,"
-        " instructions = excluded.instructions, preset = excluded.preset, refusal_vector = excluded.refusal_vector",
+        " instructions = excluded.instructions, preset = excluded.preset, refusal_vector = excluded.refusal_vector,"
+        " map_projects = excluded.map_projects",
         (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"]),
-         settings["mode"], settings["instructions"], settings["preset"], vector),
+         settings["mode"], settings["instructions"], settings["preset"], vector, chosen),
     )  # fmt: skip
     return settings
 
